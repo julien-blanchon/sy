@@ -244,6 +244,152 @@ async fn main() -> Result<()> {
     let checksum_type = verification_mode.checksum_type();
     let verify_on_write = verification_mode.verify_blocks();
 
+    // Handle daemon mode early - before creating transport router
+    // Daemon mode uses Unix socket forwarding for fast repeated syncs
+    if let Some(ref socket_path) = cli.use_daemon {
+        #[cfg(unix)]
+        {
+            if !cli.quiet && !cli.json {
+                println!("sy v{}", env!("CARGO_PKG_VERSION"));
+                println!("Syncing {} → {}", source, destination);
+                println!("Mode: Daemon protocol\n");
+            }
+
+            // Determine direction based on SyncPath types
+            let stats = if source.is_local() {
+                // Local -> Daemon: push mode
+                sync::daemon_mode::sync_daemon_mode(source.path(), socket_path, destination.path())
+                    .await?
+            } else {
+                // Daemon -> Local: pull mode
+                sync::daemon_mode::sync_pull_daemon_mode(
+                    socket_path,
+                    source.path(),
+                    destination.path(),
+                )
+                .await?
+            };
+
+            // Print summary
+            if !cli.quiet && !cli.json {
+                println!("\n{}\n", "✓ Sync complete".green().bold());
+                println!(
+                    "  Files scanned:     {}",
+                    stats.files_scanned.to_string().blue()
+                );
+                println!(
+                    "  Files created:     {}",
+                    stats.files_created.to_string().green()
+                );
+                println!(
+                    "  Files updated:     {}",
+                    stats.files_updated.to_string().yellow()
+                );
+                println!(
+                    "  Files skipped:     {}",
+                    stats.files_skipped.to_string().bright_black()
+                );
+                println!();
+                println!(
+                    "  Bytes transferred: {}",
+                    format_bytes(stats.bytes_transferred).cyan()
+                );
+                println!(
+                    "  Duration:          {}",
+                    format_duration(stats.duration).cyan()
+                );
+            }
+
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            anyhow::bail!("Daemon mode is only supported on Unix-like systems");
+        }
+    }
+
+    // Handle --daemon-auto: automatically set up daemon for SSH destinations
+    if cli.daemon_auto && destination.is_remote() {
+        #[cfg(unix)]
+        {
+            // Extract host and user from destination
+            let (host, user) = match destination {
+                SyncPath::Remote { host, user, .. } => (host.clone(), user.clone()),
+                _ => anyhow::bail!("--daemon-auto requires a remote destination"),
+            };
+
+            if !cli.quiet && !cli.json {
+                println!("sy v{}", env!("CARGO_PKG_VERSION"));
+                println!("Syncing {} → {}", source, destination);
+                println!("Mode: Daemon auto (setting up...)\n");
+            }
+
+            // Set up daemon connection automatically
+            let daemon_result = sync::daemon_auto::ensure_daemon_connection(
+                &host,
+                user.as_deref(),
+                destination.path(),
+            )
+            .await?;
+
+            if !cli.quiet && !cli.json {
+                if daemon_result.daemon_started {
+                    println!("  Started daemon on remote");
+                } else {
+                    println!("  Reusing existing daemon connection");
+                }
+                println!("  Socket: {}\n", daemon_result.socket_path);
+            }
+
+            // Perform sync using daemon
+            let stats = sync::daemon_mode::sync_daemon_mode(
+                source.path(),
+                &daemon_result.socket_path,
+                destination.path(),
+            )
+            .await?;
+
+            // Print summary
+            if !cli.quiet && !cli.json {
+                println!("\n{}\n", "✓ Sync complete".green().bold());
+                println!(
+                    "  Files scanned:     {}",
+                    stats.files_scanned.to_string().blue()
+                );
+                println!(
+                    "  Files created:     {}",
+                    stats.files_created.to_string().green()
+                );
+                println!(
+                    "  Files updated:     {}",
+                    stats.files_updated.to_string().yellow()
+                );
+                println!(
+                    "  Files skipped:     {}",
+                    stats.files_skipped.to_string().bright_black()
+                );
+                println!();
+                println!(
+                    "  Bytes transferred: {}",
+                    format_bytes(stats.bytes_transferred).cyan()
+                );
+                println!(
+                    "  Duration:          {}",
+                    format_duration(stats.duration).cyan()
+                );
+                println!(
+                    "\n  Tip: Connection persists for 10min. Subsequent syncs will be faster."
+                );
+            }
+
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            anyhow::bail!("Daemon auto mode is only supported on Unix-like systems");
+        }
+    }
+
     // Create retry config from CLI args for network interruption recovery
     let retry_config =
         retry::RetryConfig::new(cli.retry, std::time::Duration::from_secs(cli.retry_delay));

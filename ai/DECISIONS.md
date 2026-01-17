@@ -1,5 +1,40 @@
 # Decisions
 
+## 2025-01-17: Daemon Mode for Fast Repeated SSH Syncs
+
+**Context**: Each SSH sync with `sy --server` incurs ~2.5s overhead (SSH connection + server startup). For users doing many small syncs during development, this overhead dominates transfer time. SSH ControlMaster doesn't help because the bottleneck is server startup, not SSH connection time.
+
+**Decision**: Implement persistent daemon mode with Unix socket communication
+
+**Architecture**:
+- `sy --daemon --socket ~/.sy/daemon.sock`: Start persistent server on remote
+- SSH socket forwarding: `ssh -L /tmp/sy.sock:~/.sy/daemon.sock user@host -N`
+- `sy --use-daemon /tmp/sy.sock /local /remote`: Connect via forwarded socket
+
+**Protocol Extensions**:
+- SET_ROOT (0x30): Per-connection root path
+- SET_ROOT_ACK (0x31): Acknowledgment
+- PING/PONG (0x32/0x33): Keepalive
+
+**Performance Results** (50 files, 500KB total, 3 consecutive transfers):
+- Without daemon: ~9.7s average
+- With daemon: ~2.8s average
+- **3.5x improvement**
+
+**Alternatives Rejected**:
+1. **SSH ControlMaster**: Doesn't help - reuses SSH connection but still spawns new `sy --server` each time
+2. **Keep `sy --server` running**: Daemon mode is this, plus proper lifecycle management and socket forwarding
+
+**Implementation**:
+- `src/server/daemon.rs` - Daemon server
+- `src/sync/daemon_mode.rs` - Sync logic
+- `src/transport/server.rs` - DaemonSession client
+- `tests/daemon_mode_test.rs` - Integration tests
+
+**References**: ai/design/daemon-mode.md
+
+---
+
 ## 2025-11-26: sy --server Mode (SSH Performance Architecture)
 
 **Context**: SSH sync via SFTP is ~3 files/sec due to per-file round-trips. Tar-based bulk transfer works but is a workaround with limitations (external dependency, no delta, no granular progress).
@@ -465,3 +500,92 @@ pub struct SyncError {
 **Future consideration**: If sy ever supports multi-TB syncs with millions of files, add optional `checksumdb-seerdb` feature for nightly builds with documentation warning
 
 **References**: ai/research/database-comparisons.md, benches/seerdb_comparison_bench.rs
+
+---
+
+## 2026-01-17: SSH Daemon Mode
+
+**Context**: SSH syncs have ~2.5s overhead per transfer (SSH connection + `sy --server` startup)
+
+**Problem**: For repeated small syncs (development, watch mode), overhead dominates transfer time
+
+**Decision**: Implement persistent daemon mode with Unix socket forwarding
+
+**Architecture**:
+```
+Local sy          SSH Socket Forward         sy --daemon
+--use-daemon  ◀══════════════════════▶     (persistent)
+     │                                          │
+     ▼                                          ▼
+Local files                               Remote files
+```
+
+**Components**:
+1. `sy --daemon [--socket path]` - Persistent server on Unix socket
+2. `sy --use-daemon <socket>` - Connect to daemon instead of SSH
+3. SSH socket forwarding tunnels the connection
+
+**Performance Results** (50 files, 500KB total):
+| Method | Average Time |
+|--------|-------------|
+| Without Daemon | ~9.7s |
+| With Daemon | ~2.8s |
+| SSH ControlMaster | ~9.6s (no improvement) |
+
+**Key Insight**: SSH ControlMaster doesn't help because the bottleneck is server startup (~2s), not SSH connection establishment (~0.5s)
+
+**Rationale**:
+- 3.5x faster for repeated transfers
+- Same protocol as `sy --server` (minimal code duplication)
+- Unix sockets work across all Unix systems
+- SSH socket forwarding is standard SSH feature
+
+**References**: ai/design/daemon-mode.md
+
+---
+
+## 2026-01-17: Daemon Auto Mode (--daemon-auto)
+
+**Context**: Manual daemon setup is complex (start daemon, forward socket, specify paths)
+
+**Problem**: Users want daemon benefits without managing daemon lifecycle
+
+**Decision**: Implement `--daemon-auto` that handles everything automatically
+
+**Workflow**:
+1. Check if local forwarded socket already exists and works
+2. If not: SSH to remote, check if daemon is running
+3. If daemon not running: start it via SSH
+4. Set up SSH socket forwarding with ControlMaster
+5. Sync using daemon connection
+6. SSH connection persists for 10 minutes (ControlPersist=10m)
+
+**Usage**:
+```bash
+# Just add --daemon-auto to any SSH sync
+sy --daemon-auto /local user@host:/remote
+
+# First run: Sets up daemon (~6-8s)
+# Subsequent runs: Reuses connection (~3.6s vs ~10s)
+```
+
+**Performance Results** (50 files, 3 runs):
+| Mode | Average |
+|------|---------|
+| Regular SSH | ~10s |
+| Daemon-auto | ~3.6s |
+
+**Result**: ~2.7x faster for repeated syncs
+
+**Implementation**:
+- `src/sync/daemon_auto.rs` - Automatic setup logic
+- Uses SSH ControlMaster for connection persistence
+- Creates sockets in `/tmp/sy-daemon/{host}.sock`
+
+**Rationale**:
+- Zero configuration for users
+- Connection persists between invocations
+- Graceful fallback (daemon failure = error with clear message)
+- Combines daemon speed with ease of regular SSH usage
+
+**References**: ai/design/daemon-mode.md

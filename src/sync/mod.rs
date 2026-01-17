@@ -1,4 +1,8 @@
 pub mod checksumdb;
+#[cfg(unix)]
+pub mod daemon_auto;
+#[cfg(unix)]
+pub mod daemon_mode;
 pub mod dircache;
 pub mod output;
 pub mod progress;

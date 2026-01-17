@@ -498,6 +498,19 @@ pub struct Cli {
     #[arg(long)]
     pub use_daemon: Option<String>,
 
+    /// Automatically set up daemon mode for SSH destinations.
+    /// This handles everything automatically:
+    ///   1. Starts daemon on remote if not running
+    ///   2. Sets up SSH socket forwarding with ControlMaster
+    ///   3. Uses daemon for fast repeated syncs
+    ///
+    /// Example: sy --daemon-auto /local user@host:/remote
+    ///
+    /// The SSH connection persists for 10 minutes after last use.
+    /// Subsequent syncs reuse the connection (~3x faster).
+    #[arg(long)]
+    pub daemon_auto: bool,
+
     // === rsync compatibility flags (hidden, no-op) ===
     /// Recursive (no-op: sy is always recursive, for rsync compatibility)
     #[arg(short = 'r', hide = true)]
@@ -818,6 +831,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert!(cli.validate().is_ok());
     }
@@ -909,6 +923,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         let result = cli.validate();
         assert!(result.is_err());
@@ -1006,6 +1021,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         // Single file sync is now supported
         assert!(cli.validate().is_ok());
@@ -1102,6 +1118,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert!(cli.validate().is_ok());
     }
@@ -1193,6 +1210,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.log_level(), tracing::Level::ERROR);
     }
@@ -1284,6 +1302,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.log_level(), tracing::Level::INFO);
     }
@@ -1375,6 +1394,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.log_level(), tracing::Level::DEBUG);
     }
@@ -1466,6 +1486,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.log_level(), tracing::Level::TRACE);
     }
@@ -1576,6 +1597,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
 
         let result = cli.validate();
@@ -1670,6 +1692,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.verification_mode(), VerificationMode::None);
     }
@@ -1761,6 +1784,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         // verify flag should override mode to Verify
         assert_eq!(cli.verification_mode(), VerificationMode::Verify);
@@ -1865,6 +1889,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.symlink_mode(), SymlinkMode::Preserve);
     }
@@ -1956,6 +1981,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.symlink_mode(), SymlinkMode::Follow);
     }
@@ -2047,6 +2073,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
         assert_eq!(cli.symlink_mode(), SymlinkMode::Skip);
     }
@@ -2138,6 +2165,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
 
         // Archive mode should enable all these flags
@@ -2236,6 +2264,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
 
         // Only permissions should be enabled
@@ -2333,6 +2362,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
 
         // All should be enabled (archive mode OR individual flags)
@@ -2431,6 +2461,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
 
         let result = cli.validate();
@@ -2529,6 +2560,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
 
         // Should be valid - only one comparison flag
@@ -2624,6 +2656,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         };
 
         // Should be valid - only one comparison flag
@@ -2762,6 +2795,7 @@ mod tests {
             daemon: false,
             socket: "~/.sy/daemon.sock".to_string(),
             use_daemon: None,
+            daemon_auto: false,
         }
     }
 }
