@@ -1,4 +1,6 @@
 pub mod dual;
+#[cfg(feature = "gcs")]
+pub mod gcs;
 pub mod local;
 pub mod router;
 #[cfg(feature = "s3")]
@@ -131,6 +133,15 @@ pub trait Transport: Send + Sync {
         // Default implementation: collect vector and stream it (inefficient but compatible)
         let entries = self.scan(path).await?;
         Ok(futures::stream::iter(entries.into_iter().map(Ok)).boxed())
+    }
+
+    /// Scan the destination directory for comparison during sync
+    ///
+    /// For most transports, this is the same as scan(). But for DualTransport,
+    /// this routes to the destination transport instead of source.
+    async fn scan_destination(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        // Default implementation: same as scan
+        self.scan(path).await
     }
 
     /// Check if a path exists
@@ -480,6 +491,10 @@ impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
 
     async fn scan_streaming(&self, path: &Path) -> Result<BoxStream<'static, Result<FileEntry>>> {
         (**self).scan_streaming(path).await
+    }
+
+    async fn scan_destination(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        (**self).scan_destination(path).await
     }
 
     async fn exists(&self, path: &Path) -> Result<bool> {

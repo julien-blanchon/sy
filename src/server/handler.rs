@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 
@@ -520,8 +520,8 @@ fn compute_block_checksums(path: &PathBuf, block_size: usize) -> Result<Vec<Bloc
 /// Apply delta operations to reconstruct a file
 /// Optimized: uses memory mapping for existing file, buffered writer for output
 fn apply_delta_ops(
-    dest_path: &PathBuf,
-    _root: &PathBuf,
+    dest_path: &Path,
+    _root: &Path,
     ops: &[DeltaOp],
     is_compressed: bool,
 ) -> Result<()> {

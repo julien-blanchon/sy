@@ -597,10 +597,14 @@ impl<T: Transport + 'static> SyncEngine<T> {
         ));
         tracing::debug!("Starting destination scan...");
 
-        let dest_files = self.transport.scan(destination).await.unwrap_or_else(|e| {
-            tracing::debug!("Destination scan failed (may not exist yet): {}", e);
-            Vec::new()
-        });
+        let dest_files = self
+            .transport
+            .scan_destination(destination)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::debug!("Destination scan failed (may not exist yet): {}", e);
+                Vec::new()
+            });
         tracing::debug!(
             "Destination scan complete: {} files found",
             dest_files.len()
@@ -2081,7 +2085,7 @@ impl<T: Transport + 'static> SyncEngine<T> {
 
         // Scan source and destination
         let source_files = self.transport.scan(source).await?;
-        let dest_files = self.transport.scan(destination).await?;
+        let dest_files = self.transport.scan_destination(destination).await?;
 
         // End scan timing
         if let Some(ref monitor) = self.perf_monitor {

@@ -1,3 +1,5 @@
+#[cfg(feature = "gcs")]
+use super::gcs::GcsTransport;
 #[cfg(feature = "s3")]
 use super::s3::S3Transport;
 #[cfg(feature = "ssh")]
@@ -15,7 +17,7 @@ use std::path::Path;
 
 /// Router that dispatches to the appropriate transport based on path types
 ///
-/// This allows SyncEngine to work with both local, remote, and S3 paths seamlessly.
+/// This allows SyncEngine to work with both local, remote, S3, and GCS paths seamlessly.
 pub enum TransportRouter {
     Local(LocalTransport),
     Dual(DualTransport),
@@ -214,6 +216,85 @@ impl TransportRouter {
                     "S3 support not enabled. Reinstall with: cargo install sy --features s3",
                 )))
             }
+            #[cfg(feature = "gcs")]
+            (
+                SyncPath::Local { .. },
+                SyncPath::Gcs {
+                    bucket,
+                    key,
+                    project_id,
+                    service_account_path,
+                    ..
+                },
+            ) => {
+                // Local → GCS: use DualTransport (Local for source, GCS for dest)
+                let source_transport = Box::new(LocalTransport::with_verifier(verifier));
+                let dest_transport = Box::new(
+                    GcsTransport::new(
+                        bucket.clone(),
+                        key.clone(),
+                        project_id.clone(),
+                        service_account_path.clone(),
+                    )
+                    .await?,
+                );
+                let dual = DualTransport::new(source_transport, dest_transport);
+                Ok(TransportRouter::Dual(dual))
+            }
+            #[cfg(feature = "gcs")]
+            (
+                SyncPath::Gcs {
+                    bucket,
+                    key,
+                    project_id,
+                    service_account_path,
+                    ..
+                },
+                SyncPath::Local { .. },
+            ) => {
+                // GCS → Local: use DualTransport (GCS for source, Local for dest)
+                let source_transport = Box::new(
+                    GcsTransport::new(
+                        bucket.clone(),
+                        key.clone(),
+                        project_id.clone(),
+                        service_account_path.clone(),
+                    )
+                    .await?,
+                );
+                let dest_transport = Box::new(LocalTransport::with_verifier(verifier));
+                let dual = DualTransport::new(source_transport, dest_transport);
+                Ok(TransportRouter::Dual(dual))
+            }
+            #[cfg(feature = "gcs")]
+            (SyncPath::Gcs { .. }, SyncPath::Gcs { .. }) => {
+                // GCS → GCS: not yet supported
+                Err(crate::error::SyncError::Io(std::io::Error::other(
+                    "GCS-to-GCS sync not yet supported",
+                )))
+            }
+            #[cfg(feature = "gcs")]
+            (SyncPath::Gcs { .. }, SyncPath::Remote { .. })
+            | (SyncPath::Remote { .. }, SyncPath::Gcs { .. }) => {
+                // GCS ↔ Remote SSH: not yet supported
+                Err(crate::error::SyncError::Io(std::io::Error::other(
+                    "GCS-to-SSH sync not yet supported",
+                )))
+            }
+            #[cfg(all(feature = "gcs", feature = "s3"))]
+            (SyncPath::Gcs { .. }, SyncPath::S3 { .. })
+            | (SyncPath::S3 { .. }, SyncPath::Gcs { .. }) => {
+                // GCS ↔ S3: not yet supported
+                Err(crate::error::SyncError::Io(std::io::Error::other(
+                    "GCS-to-S3 sync not yet supported",
+                )))
+            }
+            #[cfg(not(feature = "gcs"))]
+            (SyncPath::Gcs { .. }, _) | (_, SyncPath::Gcs { .. }) => {
+                Err(crate::error::SyncError::Io(std::io::Error::other(
+                    "GCS support not enabled. Reinstall with: cargo install sy --features gcs",
+                )))
+            }
         }
     }
 
@@ -263,6 +344,15 @@ impl Transport for TransportRouter {
             TransportRouter::Dual(t) => t.scan(path).await,
             #[cfg(feature = "s3")]
             TransportRouter::S3(t) => t.scan(path).await,
+        }
+    }
+
+    async fn scan_destination(&self, path: &Path) -> Result<Vec<crate::sync::scanner::FileEntry>> {
+        match self {
+            TransportRouter::Local(t) => t.scan_destination(path).await,
+            TransportRouter::Dual(t) => t.scan_destination(path).await,
+            #[cfg(feature = "s3")]
+            TransportRouter::S3(t) => t.scan_destination(path).await,
         }
     }
 

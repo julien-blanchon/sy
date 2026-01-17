@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-/// Represents a sync path that can be either local, remote (SSH), or S3
+/// Represents a sync path that can be either local, remote (SSH), S3, or GCS
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncPath {
     Local {
@@ -20,6 +20,13 @@ pub enum SyncPath {
         endpoint: Option<String>,
         has_trailing_slash: bool,
     },
+    Gcs {
+        bucket: String,
+        key: String,
+        project_id: Option<String>,
+        service_account_path: Option<String>,
+        has_trailing_slash: bool,
+    },
 }
 
 impl SyncPath {
@@ -29,14 +36,15 @@ impl SyncPath {
     /// - Local: `/path/to/dir`, `./relative/path`, `relative/path`
     /// - Remote: `user@host:/path`, `host:/path`
     /// - S3: `s3://bucket/key/path`, `s3://bucket/key?region=us-west-2`, `s3://bucket/key?endpoint=https://...`
+    /// - GCS: `gs://bucket/key/path`, `gs://bucket/key?project=my-project`, `gs://bucket/key?service_account=/path/to/key.json`
     ///
     /// Trailing slash semantics (rsync-compatible):
     /// - `/path/to/dir` (no slash): Copy directory itself to destination
     /// - `/path/to/dir/` (with slash): Copy directory contents to destination
     pub fn parse(s: &str) -> Self {
         // Detect trailing slash (before parsing)
-        // For S3 paths with query parameters, check the path portion before '?'
-        let has_trailing_slash = if s.starts_with("s3://") {
+        // For S3/GCS paths with query parameters, check the path portion before '?'
+        let has_trailing_slash = if s.starts_with("s3://") || s.starts_with("gs://") {
             if let Some(q_pos) = s.find('?') {
                 s[..q_pos].ends_with('/')
             } else {
@@ -45,6 +53,56 @@ impl SyncPath {
         } else {
             s.ends_with('/') || s.ends_with('\\')
         };
+
+        // Check for GCS URL format
+        if let Some(remainder) = s.strip_prefix("gs://") {
+            // Split on ? to separate path from query params
+            let (path_part, query_part) = if let Some(q_pos) = remainder.find('?') {
+                (&remainder[..q_pos], Some(&remainder[q_pos + 1..]))
+            } else {
+                (remainder, None)
+            };
+
+            // Split path into bucket and key
+            if let Some(slash_pos) = path_part.find('/') {
+                let bucket = path_part[..slash_pos].to_string();
+                let key = path_part[slash_pos + 1..].to_string();
+
+                // Parse query parameters (project, service_account)
+                let mut project_id = None;
+                let mut service_account_path = None;
+
+                if let Some(query) = query_part {
+                    for param in query.split('&') {
+                        if let Some((k, v)) = param.split_once('=') {
+                            match k {
+                                "project" => project_id = Some(v.to_string()),
+                                "service_account" => service_account_path = Some(v.to_string()),
+                                _ => {} // Ignore unknown params
+                            }
+                        }
+                    }
+                }
+
+                return SyncPath::Gcs {
+                    bucket,
+                    key,
+                    project_id,
+                    service_account_path,
+                    has_trailing_slash,
+                };
+            } else {
+                // Just bucket, no key (treat as root)
+                return SyncPath::Gcs {
+                    bucket: path_part.to_string(),
+                    key: String::new(),
+                    project_id: None,
+                    service_account_path: None,
+                    has_trailing_slash,
+                };
+            }
+        }
+
         // Check for S3 URL format
         if let Some(remainder) = s.strip_prefix("s3://") {
             // Split on ? to separate path from query params
@@ -147,6 +205,7 @@ impl SyncPath {
             SyncPath::Local { path, .. } => path,
             SyncPath::Remote { path, .. } => path,
             SyncPath::S3 { key, .. } => Path::new(key),
+            SyncPath::Gcs { key, .. } => Path::new(key),
         }
     }
 
@@ -164,6 +223,9 @@ impl SyncPath {
                 has_trailing_slash, ..
             } => *has_trailing_slash,
             SyncPath::S3 {
+                has_trailing_slash, ..
+            } => *has_trailing_slash,
+            SyncPath::Gcs {
                 has_trailing_slash, ..
             } => *has_trailing_slash,
         }
@@ -184,6 +246,12 @@ impl SyncPath {
     #[allow(dead_code)] // Public API for S3 path detection
     pub fn is_s3(&self) -> bool {
         matches!(self, SyncPath::S3 { .. })
+    }
+
+    /// Check if this is a GCS path
+    #[allow(dead_code)] // Public API for GCS path detection
+    pub fn is_gcs(&self) -> bool {
+        matches!(self, SyncPath::Gcs { .. })
     }
 }
 
@@ -214,6 +282,26 @@ impl std::fmt::Display for SyncPath {
                 }
                 if let Some(e) = endpoint {
                     query_params.push(format!("endpoint={}", e));
+                }
+                if !query_params.is_empty() {
+                    write!(f, "?{}", query_params.join("&"))?;
+                }
+                Ok(())
+            }
+            SyncPath::Gcs {
+                bucket,
+                key,
+                project_id,
+                service_account_path,
+                ..
+            } => {
+                write!(f, "gs://{}/{}", bucket, key)?;
+                let mut query_params = Vec::new();
+                if let Some(p) = project_id {
+                    query_params.push(format!("project={}", p));
+                }
+                if let Some(sa) = service_account_path {
+                    query_params.push(format!("service_account={}", sa));
                 }
                 if !query_params.is_empty() {
                     write!(f, "?{}", query_params.join("&"))?;
@@ -466,6 +554,147 @@ mod tests {
         assert_eq!(
             path.to_string(),
             "s3://my-bucket/file.txt?endpoint=https://s3.example.com"
+        );
+    }
+
+    #[test]
+    fn test_parse_gcs_basic() {
+        let path = SyncPath::parse("gs://my-bucket/path/to/file.txt");
+        assert!(path.is_gcs());
+        assert_eq!(path.path(), Path::new("path/to/file.txt"));
+        match path {
+            SyncPath::Gcs {
+                bucket,
+                key,
+                project_id,
+                service_account_path,
+                ..
+            } => {
+                assert_eq!(bucket, "my-bucket");
+                assert_eq!(key, "path/to/file.txt");
+                assert_eq!(project_id, None);
+                assert_eq!(service_account_path, None);
+            }
+            _ => panic!("Expected GCS path"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gcs_with_project() {
+        let path = SyncPath::parse("gs://my-bucket/file.txt?project=my-project");
+        assert!(path.is_gcs());
+        match path {
+            SyncPath::Gcs {
+                bucket,
+                key,
+                project_id,
+                service_account_path,
+                ..
+            } => {
+                assert_eq!(bucket, "my-bucket");
+                assert_eq!(key, "file.txt");
+                assert_eq!(project_id, Some("my-project".to_string()));
+                assert_eq!(service_account_path, None);
+            }
+            _ => panic!("Expected GCS path"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gcs_with_service_account() {
+        let path = SyncPath::parse("gs://my-bucket/file.txt?service_account=/path/to/key.json");
+        assert!(path.is_gcs());
+        match path {
+            SyncPath::Gcs {
+                bucket,
+                key,
+                project_id,
+                service_account_path,
+                ..
+            } => {
+                assert_eq!(bucket, "my-bucket");
+                assert_eq!(key, "file.txt");
+                assert_eq!(project_id, None);
+                assert_eq!(service_account_path, Some("/path/to/key.json".to_string()));
+            }
+            _ => panic!("Expected GCS path"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gcs_with_both_params() {
+        let path =
+            SyncPath::parse("gs://my-bucket/file.txt?project=my-project&service_account=/key.json");
+        assert!(path.is_gcs());
+        match path {
+            SyncPath::Gcs {
+                bucket,
+                key,
+                project_id,
+                service_account_path,
+                ..
+            } => {
+                assert_eq!(bucket, "my-bucket");
+                assert_eq!(key, "file.txt");
+                assert_eq!(project_id, Some("my-project".to_string()));
+                assert_eq!(service_account_path, Some("/key.json".to_string()));
+            }
+            _ => panic!("Expected GCS path"),
+        }
+    }
+
+    #[test]
+    fn test_parse_gcs_bucket_only() {
+        let path = SyncPath::parse("gs://my-bucket");
+        assert!(path.is_gcs());
+        match path {
+            SyncPath::Gcs { bucket, key, .. } => {
+                assert_eq!(bucket, "my-bucket");
+                assert_eq!(key, "");
+            }
+            _ => panic!("Expected GCS path"),
+        }
+    }
+
+    #[test]
+    fn test_display_gcs() {
+        let path = SyncPath::Gcs {
+            bucket: "my-bucket".to_string(),
+            key: "path/to/file.txt".to_string(),
+            project_id: None,
+            service_account_path: None,
+            has_trailing_slash: false,
+        };
+        assert_eq!(path.to_string(), "gs://my-bucket/path/to/file.txt");
+    }
+
+    #[test]
+    fn test_display_gcs_with_project() {
+        let path = SyncPath::Gcs {
+            bucket: "my-bucket".to_string(),
+            key: "file.txt".to_string(),
+            project_id: Some("my-project".to_string()),
+            service_account_path: None,
+            has_trailing_slash: false,
+        };
+        assert_eq!(
+            path.to_string(),
+            "gs://my-bucket/file.txt?project=my-project"
+        );
+    }
+
+    #[test]
+    fn test_display_gcs_with_service_account() {
+        let path = SyncPath::Gcs {
+            bucket: "my-bucket".to_string(),
+            key: "file.txt".to_string(),
+            project_id: None,
+            service_account_path: Some("/path/to/key.json".to_string()),
+            has_trailing_slash: false,
+        };
+        assert_eq!(
+            path.to_string(),
+            "gs://my-bucket/file.txt?service_account=/path/to/key.json"
         );
     }
 }

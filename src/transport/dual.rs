@@ -42,6 +42,11 @@ impl Transport for DualTransport {
         self.source.scan(path).await
     }
 
+    async fn scan_destination(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        // Scan destination transport for comparison
+        self.dest.scan(path).await
+    }
+
     async fn scan_streaming(
         &self,
         path: &Path,

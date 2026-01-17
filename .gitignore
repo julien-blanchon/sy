@@ -26,3 +26,5 @@ SESSION_SUMMARY.md
 PERFORMANCE_ANALYSIS.md
 man/
 __pycache__
+
+.env
