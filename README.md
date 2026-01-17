@@ -46,6 +46,7 @@ cargo install sy
 # Optional features
 cargo install sy --features acl    # ACL preservation (Linux: requires libacl)
 cargo install sy --features s3     # S3 support (experimental)
+cargo install sy --features gcs    # GCS support (experimental)
 ```
 
 ### From Source
@@ -96,6 +97,7 @@ sy ~/src ~/dest -j 1                     # Sequential (many tiny files)
 - **Watch mode** — Continuous file monitoring
 - **SSH transport** — Binary protocol, faster than SFTP for bulk transfers
 - **S3 support** — AWS S3, Cloudflare R2, Backblaze B2 (experimental)
+- **GCS support** — Google Cloud Storage (experimental)
 - **Metadata preservation** — Symlinks, permissions, xattrs, ACLs
 
 ## Platform Support

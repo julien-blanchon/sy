@@ -17,7 +17,7 @@ sy is a file synchronization tool with adaptive strategies for different environ
 ├─────────────────────────────────────────────────────────────┤
 │                    Transport Layer (transport/)              │
 │  ┌───────┐  ┌──────┐  ┌────────┐  ┌────┐  ┌────────────┐  │
-│  │ Local │  │ SSH  │  │ Server │  │ S3 │  │ DualTransport│ │
+│  │ Local │  │ SSH  │  │ Server │  │ S3 │  │ GCS │  │ Dual │ │
 │  └───────┘  └──────┘  └────────┘  └────┘  └────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
 │                     Support Modules                          │
@@ -40,6 +40,7 @@ sy is a file synchronization tool with adaptive strategies for different environ
 | transport/ssh | SFTP via ssh2 (C bindings) | Stable |
 | transport/server | Server protocol client | Stable |
 | transport/s3 | AWS S3 via object_store | Experimental |
+| transport/gcs | Google Cloud Storage via object_store | Experimental |
 | server/ | `sy --server` handler | Stable |
 | integrity/ | xxHash3, BLAKE3, Adler-32 | Stable |
 | compress/ | zstd, lz4 compression | Stable |

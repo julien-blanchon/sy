@@ -113,6 +113,10 @@ pub enum SymlinkMode {
     sy /local s3://bucket/path
     sy s3://bucket/path /local
 
+    # GCS sync
+    sy /local gs://bucket/path
+    sy gs://bucket/path /local
+
     # Quiet mode (only errors)
     sy /source /destination --quiet
 
@@ -548,12 +552,14 @@ impl Cli {
                 anyhow::bail!("--bidirectional with --watch is not yet supported (deferred to future version)");
             }
 
-            // Bidirectional sync doesn't support S3 paths
+            // Bidirectional sync doesn't support S3 or GCS paths
             let source_is_s3 = self.source.as_ref().is_some_and(|p| p.is_s3());
             let dest_is_s3 = self.destination.as_ref().is_some_and(|p| p.is_s3());
-            if source_is_s3 || dest_is_s3 {
+            let source_is_gcs = self.source.as_ref().is_some_and(|p| p.is_gcs());
+            let dest_is_gcs = self.destination.as_ref().is_some_and(|p| p.is_gcs());
+            if source_is_s3 || dest_is_s3 || source_is_gcs || dest_is_gcs {
                 anyhow::bail!(
-                    "--bidirectional does not support S3 paths (use unidirectional sync instead)"
+                    "--bidirectional does not support cloud storage paths (use unidirectional sync instead)"
                 );
             }
         }

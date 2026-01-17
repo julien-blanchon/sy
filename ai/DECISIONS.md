@@ -150,6 +150,12 @@
    - Large files (≥5MB): Use multipart upload (streaming)
    - **Implementation**: src/transport/s3.rs
 
+6. **GCS Multipart Threshold: 5MB**
+   - **Rationale**: Consistent with S3 for simplicity; GCS resumable uploads work best with chunks ≥5MB
+   - Small files (<5MB): Use simple put (one API call)
+   - Large files (≥5MB): Use multipart upload (streaming via object_store)
+   - **Implementation**: src/transport/gcs.rs
+
 6. **DualTransport Smart Delegation**
    - **Rationale**: Avoid unnecessary buffering when destination supports streaming
    - Try destination transport first (enables Local→SSH streaming via SFTP)
