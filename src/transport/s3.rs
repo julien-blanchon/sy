@@ -377,4 +377,24 @@ impl Transport for S3Transport {
         let info = self.file_info(path).await?;
         Ok(info.modified)
     }
+
+    async fn check_disk_space(&self, _path: &Path, _bytes_needed: u64) -> Result<()> {
+        // S3 has virtually unlimited storage, so no disk space check needed
+        Ok(())
+    }
+
+    async fn set_bsd_flags(&self, _path: &Path, _flags: u32) -> Result<()> {
+        // BSD flags are not supported on S3 - silently ignore
+        Ok(())
+    }
+
+    async fn set_xattrs(&self, _path: &Path, _xattrs: &[(String, Vec<u8>)]) -> Result<()> {
+        // Extended attributes are not supported on S3 - silently ignore
+        Ok(())
+    }
+
+    async fn set_acls(&self, _path: &Path, _acls_text: &str) -> Result<()> {
+        // ACLs are not supported on S3 - silently ignore
+        Ok(())
+    }
 }

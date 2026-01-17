@@ -398,4 +398,19 @@ impl Transport for GcsTransport {
         // GCS has virtually unlimited storage, so no disk space check needed
         Ok(())
     }
+
+    async fn set_bsd_flags(&self, _path: &Path, _flags: u32) -> Result<()> {
+        // BSD flags are not supported on GCS - silently ignore
+        Ok(())
+    }
+
+    async fn set_xattrs(&self, _path: &Path, _xattrs: &[(String, Vec<u8>)]) -> Result<()> {
+        // Extended attributes are not supported on GCS - silently ignore
+        Ok(())
+    }
+
+    async fn set_acls(&self, _path: &Path, _acls_text: &str) -> Result<()> {
+        // ACLs are not supported on GCS - silently ignore
+        Ok(())
+    }
 }
