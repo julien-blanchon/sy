@@ -22,6 +22,7 @@ pub enum TransportRouter {
     Local(LocalTransport),
     Dual(DualTransport),
     #[cfg(feature = "s3")]
+    #[allow(dead_code)] // Reserved for future S3→S3 support
     S3(S3Transport),
 }
 
@@ -164,15 +165,19 @@ impl TransportRouter {
                     ..
                 },
             ) => {
-                // Local → S3: use S3Transport for destination
-                let s3_transport = S3Transport::new(
-                    bucket.clone(),
-                    key.clone(),
-                    region.clone(),
-                    endpoint.clone(),
-                )
-                .await?;
-                Ok(TransportRouter::S3(s3_transport))
+                // Local → S3: use DualTransport (Local for source, S3 for dest)
+                let source_transport = Box::new(LocalTransport::with_verifier(verifier));
+                let dest_transport = Box::new(
+                    S3Transport::new(
+                        bucket.clone(),
+                        key.clone(),
+                        region.clone(),
+                        endpoint.clone(),
+                    )
+                    .await?,
+                );
+                let dual = DualTransport::new(source_transport, dest_transport);
+                Ok(TransportRouter::Dual(dual))
             }
             #[cfg(feature = "s3")]
             (
@@ -185,15 +190,19 @@ impl TransportRouter {
                 },
                 SyncPath::Local { .. },
             ) => {
-                // S3 → Local: use S3Transport for source
-                let s3_transport = S3Transport::new(
-                    bucket.clone(),
-                    key.clone(),
-                    region.clone(),
-                    endpoint.clone(),
-                )
-                .await?;
-                Ok(TransportRouter::S3(s3_transport))
+                // S3 → Local: use DualTransport (S3 for source, Local for dest)
+                let source_transport = Box::new(
+                    S3Transport::new(
+                        bucket.clone(),
+                        key.clone(),
+                        region.clone(),
+                        endpoint.clone(),
+                    )
+                    .await?,
+                );
+                let dest_transport = Box::new(LocalTransport::with_verifier(verifier));
+                let dual = DualTransport::new(source_transport, dest_transport);
+                Ok(TransportRouter::Dual(dual))
             }
             #[cfg(feature = "s3")]
             (SyncPath::S3 { .. }, SyncPath::S3 { .. }) => {

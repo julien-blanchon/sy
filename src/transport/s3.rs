@@ -26,7 +26,14 @@ impl S3Transport {
     /// * `bucket` - S3 bucket name
     /// * `prefix` - Key prefix (e.g., "backups/")
     /// * `region` - Optional AWS region (defaults to config/env)
-    /// * `endpoint` - Optional custom endpoint (for R2, B2, etc.)
+    /// * `endpoint` - Optional custom endpoint (for R2, B2, DigitalOcean Spaces, etc.)
+    ///
+    /// # Environment Variables
+    /// Credentials are read from:
+    /// - `AWS_ACCESS_KEY_ID` - Access key
+    /// - `AWS_SECRET_ACCESS_KEY` - Secret key
+    /// - `AWS_REGION` or `AWS_DEFAULT_REGION` - Region (if not specified)
+    /// - `AWS_ENDPOINT_URL` - Custom endpoint (if not specified)
     pub async fn new(
         bucket: String,
         prefix: String,
@@ -34,19 +41,36 @@ impl S3Transport {
         endpoint: Option<String>,
     ) -> Result<Self> {
         // Build S3 store with object_store
-        let mut builder = AmazonS3Builder::new().with_bucket_name(&bucket);
+        // Start with from_env() to pick up AWS credentials from environment
+        let mut builder = AmazonS3Builder::from_env().with_bucket_name(&bucket);
 
+        // Apply region from argument or environment
         if let Some(r) = region {
+            builder = builder.with_region(&r);
+        } else if let Ok(r) = std::env::var("AWS_REGION") {
+            builder = builder.with_region(&r);
+        } else if let Ok(r) = std::env::var("AWS_DEFAULT_REGION") {
             builder = builder.with_region(&r);
         }
 
+        // Apply endpoint from argument or environment
         if let Some(ep) = endpoint {
             builder = builder.with_endpoint(&ep);
+            // For S3-compatible services (DigitalOcean, R2, etc.), use virtual-hosted style
+            builder = builder.with_virtual_hosted_style_request(false);
+        } else if let Ok(ep) = std::env::var("AWS_ENDPOINT_URL") {
+            builder = builder.with_endpoint(&ep);
+            builder = builder.with_virtual_hosted_style_request(false);
         }
+
+        // Skip credential loading retries on non-AWS environments
+        // This prevents long timeouts when EC2 metadata service is unavailable
+        builder = builder.with_skip_signature(false);
 
         let store = Arc::new(builder.build().map_err(|e| {
             SyncError::Io(std::io::Error::other(format!(
-                "Failed to create S3 client: {}",
+                "Failed to create S3 client: {}. \
+                 Ensure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are set.",
                 e
             )))
         })?);
@@ -62,17 +86,33 @@ impl S3Transport {
         let key = if self.prefix.is_empty() {
             path_str.to_string()
         } else {
-            format!("{}/{}", self.prefix.trim_end_matches('/'), path_str)
+            let prefix_normalized = self.prefix.trim_end_matches('/');
+            // Check if path already starts with the prefix (avoid double-prefixing)
+            if path_str.starts_with(prefix_normalized)
+                && (path_str.len() == prefix_normalized.len()
+                    || path_str.chars().nth(prefix_normalized.len()) == Some('/'))
+            {
+                // Path already has prefix, use as-is
+                path_str.to_string()
+            } else {
+                // Add prefix
+                format!("{}/{}", prefix_normalized, path_str)
+            }
         };
 
         ObjectPath::from(key)
     }
 
-    /// Convert an object store path to a local path
+    /// Convert an object store path to a local path (strips prefix)
     fn object_path_to_path(&self, object_path: &ObjectPath) -> PathBuf {
         let key = object_path.as_ref();
         let key = if !self.prefix.is_empty() {
-            key.strip_prefix(&self.prefix)
+            // Try stripping with trailing slash first, then without
+            let prefix_with_slash = format!("{}/", self.prefix.trim_end_matches('/'));
+            let prefix_without_slash = self.prefix.trim_end_matches('/');
+
+            key.strip_prefix(&prefix_with_slash)
+                .or_else(|| key.strip_prefix(prefix_without_slash))
                 .unwrap_or(key)
                 .trim_start_matches('/')
         } else {
