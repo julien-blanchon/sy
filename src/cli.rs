@@ -471,6 +471,33 @@ pub struct Cli {
     #[arg(long, hide = true)]
     pub server: bool,
 
+    // === Daemon mode ===
+    /// Run as a persistent daemon server listening on a Unix socket.
+    /// This eliminates cold-start overhead (~2s) for repeated syncs.
+    ///
+    /// Usage: sy --daemon [--socket /path/to/socket]
+    ///
+    /// The daemon accepts connections from clients using --use-daemon.
+    /// Use with SSH socket forwarding for remote syncs without SSH overhead:
+    ///   ssh -L /tmp/local.sock:~/.sy/daemon.sock user@host -N &
+    ///   sy --use-daemon /tmp/local.sock /local/path daemon:/remote/path
+    #[arg(long)]
+    pub daemon: bool,
+
+    /// Unix socket path for daemon mode (default: ~/.sy/daemon.sock)
+    #[arg(long, default_value = "~/.sy/daemon.sock")]
+    pub socket: String,
+
+    /// Connect to a running daemon via Unix socket instead of spawning SSH.
+    /// Provide the path to a Unix socket (local or forwarded via SSH).
+    ///
+    /// Example with SSH socket forwarding:
+    ///   # On remote: sy --daemon --socket ~/.sy/daemon.sock
+    ///   # Forward: ssh -L /tmp/sy.sock:~/.sy/daemon.sock user@host -N
+    ///   # Sync: sy --use-daemon /tmp/sy.sock /local/path daemon:/remote/path
+    #[arg(long)]
+    pub use_daemon: Option<String>,
+
     // === rsync compatibility flags (hidden, no-op) ===
     /// Recursive (no-op: sy is always recursive, for rsync compatibility)
     #[arg(short = 'r', hide = true)]
@@ -558,8 +585,8 @@ impl Cli {
             }
         }
 
-        // --list-profiles and --show-profile don't need source/destination
-        if self.list_profiles || self.show_profile.is_some() || self.server {
+        // --list-profiles, --show-profile, --server, and --daemon don't need source/destination
+        if self.list_profiles || self.show_profile.is_some() || self.server || self.daemon {
             return Ok(());
         }
 
@@ -788,6 +815,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert!(cli.validate().is_ok());
     }
@@ -876,6 +906,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         let result = cli.validate();
         assert!(result.is_err());
@@ -970,6 +1003,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         // Single file sync is now supported
         assert!(cli.validate().is_ok());
@@ -1063,6 +1099,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert!(cli.validate().is_ok());
     }
@@ -1151,6 +1190,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.log_level(), tracing::Level::ERROR);
     }
@@ -1239,6 +1281,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.log_level(), tracing::Level::INFO);
     }
@@ -1327,6 +1372,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.log_level(), tracing::Level::DEBUG);
     }
@@ -1415,6 +1463,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.log_level(), tracing::Level::TRACE);
     }
@@ -1522,6 +1573,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
 
         let result = cli.validate();
@@ -1613,6 +1667,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.verification_mode(), VerificationMode::None);
     }
@@ -1701,6 +1758,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         // verify flag should override mode to Verify
         assert_eq!(cli.verification_mode(), VerificationMode::Verify);
@@ -1802,6 +1862,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.symlink_mode(), SymlinkMode::Preserve);
     }
@@ -1890,6 +1953,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.symlink_mode(), SymlinkMode::Follow);
     }
@@ -1978,6 +2044,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
         assert_eq!(cli.symlink_mode(), SymlinkMode::Skip);
     }
@@ -2066,6 +2135,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
 
         // Archive mode should enable all these flags
@@ -2161,6 +2233,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
 
         // Only permissions should be enabled
@@ -2255,6 +2330,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
 
         // All should be enabled (archive mode OR individual flags)
@@ -2350,6 +2428,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
 
         let result = cli.validate();
@@ -2445,6 +2526,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
 
         // Should be valid - only one comparison flag
@@ -2537,6 +2621,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         };
 
         // Should be valid - only one comparison flag
@@ -2672,6 +2759,9 @@ mod tests {
             clear_resume_state: false,
             recursive: false,
             server: false,
+            daemon: false,
+            socket: "~/.sy/daemon.sock".to_string(),
+            use_daemon: None,
         }
     }
 }

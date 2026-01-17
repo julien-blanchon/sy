@@ -105,6 +105,16 @@ async fn main() -> Result<()> {
         return sy::server::run_server().await;
     }
 
+    // Daemon mode - persistent server listening on Unix socket
+    if cli.daemon {
+        let root_path = cli
+            .source
+            .as_ref()
+            .map(|s| s.path().to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        return sy::server::daemon::run_daemon(&cli.socket, &root_path).await;
+    }
+
     // Merge profile with CLI args if --profile is set
     if let Some(ref profile_name) = cli.profile {
         let profile = config

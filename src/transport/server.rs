@@ -8,6 +8,11 @@ use std::process::Stdio;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
+#[cfg(unix)]
+use tokio::net::UnixStream;
+
+#[cfg(unix)]
+use crate::server::daemon::{read_set_root_ack, write_set_root, MSG_PING, MSG_PONG};
 use crate::server::protocol::{
     self, ChecksumReq, ChecksumResp, Decision, DeltaData, DeltaOp, FileData, FileDone, FileList,
     FileListAck, FileListEntry, Hello, MessageType, MkdirBatch, MkdirBatchAck, SymlinkBatch,
@@ -579,6 +584,513 @@ impl ServerSession {
     pub async fn close(mut self) -> Result<()> {
         drop(self.stdin);
         let _ = self.child.wait().await;
+        Ok(())
+    }
+}
+
+// =============================================================================
+// DaemonSession - Client for connecting to daemon via Unix socket
+// =============================================================================
+
+/// Session connected to a daemon via Unix socket
+///
+/// This provides the same interface as ServerSession but connects via Unix socket
+/// instead of spawning an SSH process. Use with SSH socket forwarding for fast
+/// repeated syncs:
+///
+/// ```bash
+/// # Start daemon on remote
+/// sy --daemon --socket ~/.sy/daemon.sock
+///
+/// # Forward socket via SSH
+/// ssh -L /tmp/sy.sock:~/.sy/daemon.sock user@host -N &
+///
+/// # Connect to daemon
+/// let session = DaemonSession::connect("/tmp/sy.sock", "/remote/path").await?;
+/// ```
+#[cfg(unix)]
+pub struct DaemonSession {
+    reader: tokio::net::unix::OwnedReadHalf,
+    writer: tokio::net::unix::OwnedWriteHalf,
+}
+
+#[cfg(unix)]
+impl DaemonSession {
+    /// Connect to a daemon via Unix socket and set the root path
+    pub async fn connect(socket_path: &str, remote_path: &Path) -> Result<Self> {
+        let stream = UnixStream::connect(socket_path)
+            .await
+            .with_context(|| format!("Failed to connect to daemon at {}", socket_path))?;
+
+        let (reader, writer) = stream.into_split();
+        let mut session = Self { reader, writer };
+
+        // Handshake
+        session.handshake().await?;
+
+        // Set root path
+        let path_str = remote_path.to_string_lossy();
+        write_set_root(&mut session.writer, &path_str).await?;
+
+        if !read_set_root_ack(&mut session.reader).await? {
+            return Err(anyhow::anyhow!(
+                "Daemon rejected root path: {}",
+                remote_path.display()
+            ));
+        }
+
+        Ok(session)
+    }
+
+    /// Connect to a daemon in PULL mode (daemon sends files to client)
+    pub async fn connect_pull(socket_path: &str, remote_path: &Path) -> Result<Self> {
+        let stream = UnixStream::connect(socket_path)
+            .await
+            .with_context(|| format!("Failed to connect to daemon at {}", socket_path))?;
+
+        let (reader, writer) = stream.into_split();
+        let mut session = Self { reader, writer };
+
+        // Handshake with PULL flag
+        session.handshake_pull().await?;
+
+        // Set root path
+        let path_str = remote_path.to_string_lossy();
+        write_set_root(&mut session.writer, &path_str).await?;
+
+        if !read_set_root_ack(&mut session.reader).await? {
+            return Err(anyhow::anyhow!(
+                "Daemon rejected root path: {}",
+                remote_path.display()
+            ));
+        }
+
+        Ok(session)
+    }
+
+    async fn handshake(&mut self) -> Result<()> {
+        let hello = Hello {
+            version: PROTOCOL_VERSION,
+            flags: 0,
+            capabilities: vec![],
+        };
+
+        hello.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon handshake error: {}", err.message));
+        }
+
+        if type_byte != MessageType::Hello as u8 {
+            return Err(anyhow::anyhow!("Expected HELLO, got 0x{:02X}", type_byte));
+        }
+
+        let resp = Hello::read(&mut self.reader).await?;
+
+        if resp.version != PROTOCOL_VERSION {
+            return Err(anyhow::anyhow!("Version mismatch: daemon {}", resp.version));
+        }
+
+        Ok(())
+    }
+
+    async fn handshake_pull(&mut self) -> Result<()> {
+        let hello = Hello {
+            version: PROTOCOL_VERSION,
+            flags: HELLO_FLAG_PULL,
+            capabilities: vec![],
+        };
+
+        hello.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon handshake error: {}", err.message));
+        }
+
+        if type_byte != MessageType::Hello as u8 {
+            return Err(anyhow::anyhow!("Expected HELLO, got 0x{:02X}", type_byte));
+        }
+
+        let resp = Hello::read(&mut self.reader).await?;
+
+        if resp.version != PROTOCOL_VERSION {
+            return Err(anyhow::anyhow!("Version mismatch: daemon {}", resp.version));
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Keepalive
+    // =========================================================================
+
+    /// Send a PING to check if daemon is alive
+    pub async fn ping(&mut self) -> Result<()> {
+        self.writer.write_u32(0).await?;
+        self.writer.write_u8(MSG_PING).await?;
+        self.writer.flush().await?;
+
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte != MSG_PONG {
+            return Err(anyhow::anyhow!("Expected PONG, got 0x{:02X}", type_byte));
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // FILE_LIST
+    // =========================================================================
+
+    pub async fn send_file_list(&mut self, entries: Vec<FileListEntry>) -> Result<()> {
+        let list = FileList { entries };
+        list.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn read_ack(&mut self) -> Result<FileListAck> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::FileListAck as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected FILE_LIST_ACK, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        FileListAck::read(&mut self.reader).await
+    }
+
+    // =========================================================================
+    // MKDIR_BATCH
+    // =========================================================================
+
+    pub async fn send_mkdir_batch(&mut self, paths: Vec<String>) -> Result<()> {
+        let batch = MkdirBatch { paths };
+        batch.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn read_mkdir_ack(&mut self) -> Result<MkdirBatchAck> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::MkdirBatchAck as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected MKDIR_BATCH_ACK, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        MkdirBatchAck::read(&mut self.reader).await
+    }
+
+    // =========================================================================
+    // SYMLINK_BATCH
+    // =========================================================================
+
+    pub async fn send_symlink_batch(&mut self, entries: Vec<SymlinkEntry>) -> Result<()> {
+        let batch = SymlinkBatch { entries };
+        batch.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn read_symlink_ack(&mut self) -> Result<SymlinkBatchAck> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::SymlinkBatchAck as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected SYMLINK_BATCH_ACK, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        SymlinkBatchAck::read(&mut self.reader).await
+    }
+
+    // =========================================================================
+    // FILE_DATA
+    // =========================================================================
+
+    pub async fn send_file_data(&mut self, index: u32, offset: u64, data: Vec<u8>) -> Result<()> {
+        let file_data = FileData {
+            index,
+            offset,
+            flags: 0,
+            data,
+        };
+        file_data.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn send_file_data_no_flush(
+        &mut self,
+        index: u32,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        let file_data = FileData {
+            index,
+            offset,
+            flags: 0,
+            data,
+        };
+        file_data.write(&mut self.writer).await?;
+        Ok(())
+    }
+
+    pub async fn send_file_data_with_flags(
+        &mut self,
+        index: u32,
+        offset: u64,
+        flags: u8,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        let file_data = FileData {
+            index,
+            offset,
+            flags,
+            data,
+        };
+        file_data.write(&mut self.writer).await?;
+        Ok(())
+    }
+
+    pub async fn flush(&mut self) -> Result<()> {
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn read_file_done(&mut self) -> Result<FileDone> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::FileDone as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected FILE_DONE, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        FileDone::read(&mut self.reader).await
+    }
+
+    // =========================================================================
+    // DELTA SYNC
+    // =========================================================================
+
+    pub async fn send_checksum_req(&mut self, index: u32, block_size: u32) -> Result<()> {
+        let req = ChecksumReq { index, block_size };
+        req.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn send_checksum_req_no_flush(&mut self, index: u32, block_size: u32) -> Result<()> {
+        let req = ChecksumReq { index, block_size };
+        req.write(&mut self.writer).await?;
+        Ok(())
+    }
+
+    pub async fn read_checksum_resp(&mut self) -> Result<ChecksumResp> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::ChecksumResp as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected CHECKSUM_RESP, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        ChecksumResp::read(&mut self.reader).await
+    }
+
+    pub async fn send_delta_data(
+        &mut self,
+        index: u32,
+        flags: u8,
+        ops: Vec<DeltaOp>,
+    ) -> Result<()> {
+        let delta = DeltaData { index, flags, ops };
+        delta.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn send_delta_data_no_flush(
+        &mut self,
+        index: u32,
+        flags: u8,
+        ops: Vec<DeltaOp>,
+    ) -> Result<()> {
+        let delta = DeltaData { index, flags, ops };
+        delta.write(&mut self.writer).await?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // PULL MODE
+    // =========================================================================
+
+    pub async fn read_mkdir_batch(&mut self) -> Result<MkdirBatch> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::MkdirBatch as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected MKDIR_BATCH, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        MkdirBatch::read(&mut self.reader).await
+    }
+
+    pub async fn send_mkdir_batch_ack(
+        &mut self,
+        created: u32,
+        failed: Vec<(String, String)>,
+    ) -> Result<()> {
+        let ack = MkdirBatchAck { created, failed };
+        ack.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn read_file_list(&mut self) -> Result<FileList> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::FileList as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected FILE_LIST, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        FileList::read(&mut self.reader).await
+    }
+
+    pub async fn send_file_list_ack(&mut self, decisions: Vec<Decision>) -> Result<()> {
+        let ack = FileListAck { decisions };
+        ack.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn read_file_data(&mut self) -> Result<Option<FileData>> {
+        let _len = self.reader.read_u32().await?;
+        let type_byte = self.reader.read_u8().await?;
+
+        if type_byte == MessageType::SymlinkBatch as u8 {
+            return Ok(None);
+        }
+
+        if type_byte == MessageType::Error as u8 {
+            let err = protocol::ErrorMessage::read(&mut self.reader).await?;
+            return Err(anyhow::anyhow!("Daemon error: {}", err.message));
+        }
+
+        if type_byte != MessageType::FileData as u8 {
+            return Err(anyhow::anyhow!(
+                "Expected FILE_DATA or SYMLINK_BATCH, got 0x{:02X}",
+                type_byte
+            ));
+        }
+
+        let data = FileData::read(&mut self.reader).await?;
+        Ok(Some(data))
+    }
+
+    pub async fn send_file_done(&mut self, index: u32, status: u8) -> Result<()> {
+        let done = FileDone {
+            index,
+            status,
+            checksum: vec![],
+        };
+        done.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    pub async fn read_symlink_batch_body(&mut self) -> Result<SymlinkBatch> {
+        SymlinkBatch::read(&mut self.reader).await
+    }
+
+    pub async fn send_symlink_batch_ack(
+        &mut self,
+        created: u32,
+        failed: Vec<(String, String)>,
+    ) -> Result<()> {
+        let ack = SymlinkBatchAck { created, failed };
+        ack.write(&mut self.writer).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Lifecycle
+    // =========================================================================
+
+    /// Close the session gracefully
+    pub async fn close(self) -> Result<()> {
+        // Dropping the reader/writer closes the connection
+        drop(self.reader);
+        drop(self.writer);
         Ok(())
     }
 }
