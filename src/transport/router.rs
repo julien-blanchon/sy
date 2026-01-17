@@ -295,6 +295,18 @@ impl TransportRouter {
                     "GCS support not enabled. Reinstall with: cargo install sy --features gcs",
                 )))
             }
+            // Daemon paths require --use-daemon socket to be specified
+            (SyncPath::Daemon { .. }, _) | (_, SyncPath::Daemon { .. }) => {
+                Err(crate::error::SyncError::Io(std::io::Error::other(
+                    "Daemon paths (daemon:/path) require --use-daemon <socket> to be specified.\n\
+                     Example: sy --use-daemon /tmp/sy.sock /local daemon:/remote\n\
+                     \n\
+                     Setup:\n\
+                     1. Start daemon on remote: sy --daemon --socket ~/.sy/daemon.sock\n\
+                     2. Forward socket via SSH: ssh -L /tmp/sy.sock:~/.sy/daemon.sock user@host -N &\n\
+                     3. Sync using daemon: sy --use-daemon /tmp/sy.sock /local daemon:/remote",
+                )))
+            }
         }
     }
 

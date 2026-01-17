@@ -85,6 +85,48 @@ sy ~/dev /backup --watch                 # Continuous sync
 sy ~/src ~/dest -j 1                     # Sequential (many tiny files)
 ```
 
+## Daemon Mode (Fast Repeated Syncs)
+
+For scenarios with many repeated syncs (development, watch mode), daemon mode eliminates the ~2.5s SSH+server startup overhead.
+
+### Easy: Automatic Setup (Recommended)
+
+```bash
+# Just add --daemon-auto to any SSH sync
+sy --daemon-auto /local user@host:/remote
+
+# First run: Sets up daemon automatically (~6s)
+# Subsequent runs: Reuses connection (~3.6s vs ~10s)
+```
+
+The connection persists for 10 minutes after last use.
+
+### Manual Setup
+
+For more control, set up daemon manually:
+
+```bash
+# 1. Start daemon on remote machine
+ssh user@host sy --daemon --socket ~/.sy/daemon.sock
+
+# 2. Forward socket via SSH (keep running)
+ssh -L /tmp/sy.sock:~/.sy/daemon.sock user@host -N &
+
+# 3. Sync using daemon (~3x faster)
+sy --use-daemon /tmp/sy.sock /local/path /remote/path
+```
+
+**Performance comparison** (50 files, 500KB):
+| Method | Time |
+|--------|------|
+| Without daemon | ~10s |
+| With daemon | ~2.8s |
+
+Daemon mode is most useful when:
+- Syncing files repeatedly throughout the day
+- Using watch mode for continuous sync
+- Transferring many small batches of files
+
 > **Trailing slash:** sy follows rsync semantics — `/source` copies the directory, `/source/` copies contents only.
 
 ## Features

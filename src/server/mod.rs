@@ -2,6 +2,7 @@
 // The code appears "dead" to the compiler since it's only used at runtime
 #![allow(dead_code)]
 
+pub mod daemon;
 pub mod handler;
 pub mod protocol;
 

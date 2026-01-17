@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-/// Represents a sync path that can be either local, remote (SSH), S3, or GCS
+/// Represents a sync path that can be either local, remote (SSH), S3, GCS, or daemon
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncPath {
     Local {
@@ -25,6 +25,13 @@ pub enum SyncPath {
         key: String,
         project_id: Option<String>,
         service_account_path: Option<String>,
+        has_trailing_slash: bool,
+    },
+    /// Daemon path - connects via Unix socket instead of SSH
+    /// Format: daemon:/path/on/remote
+    /// Requires --use-daemon <socket> to specify the socket path
+    Daemon {
+        path: PathBuf,
         has_trailing_slash: bool,
     },
 }
@@ -152,6 +159,14 @@ impl SyncPath {
             }
         }
 
+        // Check for daemon path format (daemon:/path)
+        if let Some(remainder) = s.strip_prefix("daemon:") {
+            return SyncPath::Daemon {
+                path: PathBuf::from(remainder),
+                has_trailing_slash,
+            };
+        }
+
         // Check for remote path format (contains : before any /)
         if let Some(colon_pos) = s.find(':') {
             // Check if this is a remote path (no / before the :)
@@ -206,6 +221,7 @@ impl SyncPath {
             SyncPath::Remote { path, .. } => path,
             SyncPath::S3 { key, .. } => Path::new(key),
             SyncPath::Gcs { key, .. } => Path::new(key),
+            SyncPath::Daemon { path, .. } => path,
         }
     }
 
@@ -226,6 +242,9 @@ impl SyncPath {
                 has_trailing_slash, ..
             } => *has_trailing_slash,
             SyncPath::Gcs {
+                has_trailing_slash, ..
+            } => *has_trailing_slash,
+            SyncPath::Daemon {
                 has_trailing_slash, ..
             } => *has_trailing_slash,
         }
@@ -252,6 +271,12 @@ impl SyncPath {
     #[allow(dead_code)] // Public API for GCS path detection
     pub fn is_gcs(&self) -> bool {
         matches!(self, SyncPath::Gcs { .. })
+    }
+
+    /// Check if this is a daemon path (requires --use-daemon socket)
+    #[allow(dead_code)] // Public API for daemon path detection
+    pub fn is_daemon(&self) -> bool {
+        matches!(self, SyncPath::Daemon { .. })
     }
 }
 
@@ -308,6 +333,7 @@ impl std::fmt::Display for SyncPath {
                 }
                 Ok(())
             }
+            SyncPath::Daemon { path, .. } => write!(f, "daemon:{}", path.display()),
         }
     }
 }
@@ -696,5 +722,50 @@ mod tests {
             path.to_string(),
             "gs://my-bucket/file.txt?service_account=/path/to/key.json"
         );
+    }
+
+    // =========================================================================
+    // Daemon path tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_daemon_path() {
+        let path = SyncPath::parse("daemon:/home/user/sync");
+        assert!(path.is_daemon());
+        assert_eq!(path.path(), Path::new("/home/user/sync"));
+        assert!(!path.has_trailing_slash());
+    }
+
+    #[test]
+    fn test_parse_daemon_path_with_trailing_slash() {
+        let path = SyncPath::parse("daemon:/home/user/sync/");
+        assert!(path.is_daemon());
+        assert_eq!(path.path(), Path::new("/home/user/sync/"));
+        assert!(path.has_trailing_slash());
+    }
+
+    #[test]
+    fn test_parse_daemon_path_tilde() {
+        let path = SyncPath::parse("daemon:~/backup");
+        assert!(path.is_daemon());
+        assert_eq!(path.path(), Path::new("~/backup"));
+    }
+
+    #[test]
+    fn test_display_daemon_path() {
+        let path = SyncPath::Daemon {
+            path: PathBuf::from("/remote/path"),
+            has_trailing_slash: false,
+        };
+        assert_eq!(path.to_string(), "daemon:/remote/path");
+    }
+
+    #[test]
+    fn test_daemon_not_local_or_remote() {
+        let path = SyncPath::parse("daemon:/path");
+        assert!(!path.is_local());
+        assert!(!path.is_remote());
+        assert!(!path.is_s3());
+        assert!(path.is_daemon());
     }
 }
