@@ -30,9 +30,17 @@ jobs:
                   args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
                   sccache: "true"
                   manylinux: "2_28"
-                  # Install openssl-devel and use system OpenSSL (not vendored)
+                  # Install OpenSSL dev packages - handle both dnf (native) and apt (cross) containers
+                  # See: https://github.com/PyO3/maturin-action/issues/314
                   before-script-linux: |
-                      dnf install -y openssl-devel perl-IPC-Cmd
+                      if command -v dnf &> /dev/null; then
+                          dnf install -y openssl-devel perl-IPC-Cmd pkg-config
+                      elif command -v apt-get &> /dev/null; then
+                          apt-get update
+                          apt-get install -y libssl-dev pkg-config
+                      elif command -v apk &> /dev/null; then
+                          apk add openssl-dev pkgconfig
+                      fi
               env:
                   OPENSSL_NO_VENDOR: "1"
             - name: Upload wheels
