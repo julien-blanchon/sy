@@ -16,44 +16,55 @@ permissions:
     contents: read
 
 jobs:
-    linux:
+    # Native x86_64 Linux build - uses system OpenSSL
+    linux-x86_64:
         runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                target: [x86_64, aarch64]
         steps:
             - uses: actions/checkout@v4
             - name: Build wheels
               uses: PyO3/maturin-action@v1
               with:
-                  target: ${{ matrix.target }}
+                  target: x86_64
                   args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
                   sccache: "true"
                   manylinux: "2_28"
-                  # Install OpenSSL dev packages - handle both dnf (native) and apt (cross) containers
-                  # See: https://github.com/PyO3/maturin-action/issues/314
+                  # Native build: use system OpenSSL (faster, no Perl needed)
                   before-script-linux: |
-                      # Install OpenSSL dev packages
-                      if command -v dnf &> /dev/null; then
-                          dnf install -y openssl-devel pkg-config
-                      elif command -v apt-get &> /dev/null; then
-                          apt-get update
-                          apt-get install -y libssl-dev pkg-config
-                      elif command -v apk &> /dev/null; then
-                          apk add openssl-dev pkgconfig
-                      fi
-                      
-                      # CRITICAL: Set OPENSSL_NO_VENDOR via cargo config to use system OpenSSL
-                      # This avoids building OpenSSL from source (which needs many Perl modules)
+                      dnf install -y openssl-devel pkg-config
+                      # Use system OpenSSL instead of vendored
                       mkdir -p /home/runner/work/sy/sy/.cargo
-                      cat > /home/runner/work/sy/sy/.cargo/config.toml << 'EOF'
-                      [env]
-                      OPENSSL_NO_VENDOR = "1"
-                      EOF
+                      echo '[env]' > /home/runner/work/sy/sy/.cargo/config.toml
+                      echo 'OPENSSL_NO_VENDOR = "1"' >> /home/runner/work/sy/sy/.cargo/config.toml
             - name: Upload wheels
               uses: actions/upload-artifact@v4
               with:
-                  name: wheels-linux-${{ matrix.target }}
+                  name: wheels-linux-x86_64
+                  path: dist
+
+    # Cross-compile aarch64 Linux build - uses vendored OpenSSL
+    # Cross containers don't have target-arch OpenSSL headers, so we must vendor
+    linux-aarch64:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: Build wheels
+              uses: PyO3/maturin-action@v1
+              with:
+                  target: aarch64
+                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+                  sccache: "true"
+                  manylinux: "2_28"
+                  # Cross-compile: must use vendored OpenSSL (no cross-compiled headers available)
+                  # Install all Perl modules needed to build OpenSSL from source
+                  # See: https://docs.rs/openssl/latest/openssl/#vendored
+                  before-script-linux: |
+                      apt-get update
+                      # Install full Perl with all modules needed by OpenSSL's build system
+                      apt-get install -y perl perl-modules pkg-config make
+            - name: Upload wheels
+              uses: actions/upload-artifact@v4
+              with:
+                  name: wheels-linux-aarch64
                   path: dist
 
     # Windows disabled - requires additional platform-specific work
@@ -115,7 +126,7 @@ jobs:
         name: Release
         runs-on: ubuntu-latest
         if: "startsWith(github.ref, 'refs/tags/sypy-v') && !inputs.dry_run"
-        needs: [linux, macos, sdist]
+        needs: [linux-x86_64, linux-aarch64, macos, sdist]
         permissions:
             id-token: write
         environment:
