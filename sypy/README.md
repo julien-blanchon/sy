@@ -13,7 +13,7 @@ Fast, modern file synchronization in Python - powered by [sy](https://github.com
 ## Installation
 
 ```bash
-pip install sypy
+pip install sy-python
 ```
 
 Or build from source:

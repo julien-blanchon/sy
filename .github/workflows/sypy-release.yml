@@ -1,0 +1,111 @@
+name: sypy Release
+
+on:
+    push:
+        tags:
+            - "sypy-v*"
+    workflow_dispatch:
+        inputs:
+            dry_run:
+                description: "Build only, don't publish"
+                required: false
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+jobs:
+    linux:
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                target: [x86_64, aarch64]
+        steps:
+            - uses: actions/checkout@v4
+            - name: Build wheels
+              uses: PyO3/maturin-action@v1
+              with:
+                  target: ${{ matrix.target }}
+                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+                  sccache: "true"
+                  manylinux: auto
+            - name: Upload wheels
+              uses: actions/upload-artifact@v4
+              with:
+                  name: wheels-linux-${{ matrix.target }}
+                  path: dist
+
+    windows:
+        runs-on: windows-latest
+        strategy:
+            matrix:
+                target: [x64]
+        steps:
+            - uses: actions/checkout@v4
+            - name: Build wheels
+              uses: PyO3/maturin-action@v1
+              with:
+                  target: ${{ matrix.target }}
+                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+                  sccache: "true"
+            - name: Upload wheels
+              uses: actions/upload-artifact@v4
+              with:
+                  name: wheels-windows-${{ matrix.target }}
+                  path: dist
+
+    macos:
+        runs-on: macos-latest
+        strategy:
+            matrix:
+                target: [x86_64, aarch64]
+        steps:
+            - uses: actions/checkout@v4
+            - name: Build wheels
+              uses: PyO3/maturin-action@v1
+              with:
+                  target: ${{ matrix.target }}
+                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+                  sccache: "true"
+            - name: Upload wheels
+              uses: actions/upload-artifact@v4
+              with:
+                  name: wheels-macos-${{ matrix.target }}
+                  path: dist
+
+    sdist:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - name: Build sdist
+              uses: PyO3/maturin-action@v1
+              with:
+                  command: sdist
+                  args: --out dist --manifest-path sypy/Cargo.toml
+            - name: Upload sdist
+              uses: actions/upload-artifact@v4
+              with:
+                  name: sdist
+                  path: dist
+
+    release:
+        name: Release
+        runs-on: ubuntu-latest
+        if: "startsWith(github.ref, 'refs/tags/sypy-v') && !inputs.dry_run"
+        needs: [linux, windows, macos, sdist]
+        permissions:
+            id-token: write
+        environment:
+            name: pypi
+            url: https://pypi.org/p/sy-python
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  merge-multiple: true
+                  path: dist
+            - name: Publish to PyPI
+              uses: pypa/gh-action-pypi-publish@release/v1
+              with:
+                  packages-dir: dist
+                  skip-existing: true
