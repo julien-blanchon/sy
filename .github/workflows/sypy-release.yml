@@ -30,6 +30,9 @@ jobs:
                   args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
                   sccache: "true"
                   manylinux: auto
+                  # Install perl modules needed to build vendored OpenSSL
+                  before-script-linux: |
+                      yum install -y perl-IPC-Cmd perl-FindBin || apt-get update && apt-get install -y perl
             - name: Upload wheels
               uses: actions/upload-artifact@v4
               with:
