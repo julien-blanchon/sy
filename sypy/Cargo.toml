@@ -6,7 +6,6 @@ authors = ["Nick Russo <nijaru7@gmail.com>"]
 description = "Python bindings for sy - Modern file synchronization tool"
 repository = "https://github.com/nijaru/sy"
 license = "MIT"
-readme = "README.md"
 keywords = ["rsync", "sync", "file-transfer", "python", "pyo3"]
 
 [lib]
@@ -15,7 +14,7 @@ crate-type = ["cdylib"]
 
 [features]
 default = ["ssh", "s3", "gcs"]
-ssh = ["sy/ssh"]
+ssh = ["sy/ssh", "dep:openssl"]
 s3 = ["sy/s3"]
 gcs = ["sy/gcs"]
 acl = ["sy/acl"]
@@ -25,7 +24,10 @@ acl = ["sy/acl"]
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
 
 # The sy crate (parent directory)
-sy = { path = ".." }
+sy = { path = "..", default-features = false }
+
+# OpenSSL with vendored feature for static linking (needed for SSH in manylinux)
+openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

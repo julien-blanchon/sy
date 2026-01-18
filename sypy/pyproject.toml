@@ -6,7 +6,6 @@ build-backend = "maturin"
 name = "sy-python"
 version = "0.1.0"
 description = "Python bindings for sy - Modern file synchronization tool"
-readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"
 keywords = ["rsync", "sync", "file-transfer", "backup"]
@@ -42,3 +41,5 @@ Documentation = "https://github.com/nijaru/sy#readme"
 features = ["pyo3/extension-module"]
 python-source = "python"
 module-name = "sypy._sypy"
+# Use cargo's sdist generator to avoid workspace README conflict
+sdist-generator = "cargo"
