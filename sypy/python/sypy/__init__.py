@@ -48,8 +48,12 @@ from sypy._sypy import (
     SyncStats,
     # Version
     __version__,
+    # CLI functions
+    main,
     # Functions
     parse_path,
+    run_daemon,
+    run_server,
     sync,
     sync_with_options,
 )
@@ -68,8 +72,12 @@ __all__ = [
     "SyncStats",
     # Version
     "__version__",
+    # CLI functions
+    "main",
     # Functions
     "parse_path",
+    "run_daemon",
+    "run_server",
     "sync",
     "sync_with_options",
 ]

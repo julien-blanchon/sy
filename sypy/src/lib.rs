@@ -3,6 +3,7 @@
 //! This module provides PyO3-based Python bindings for the sy Rust crate,
 //! exposing all major sync functionality with a Pythonic API.
 
+mod cli;
 mod config;
 mod error;
 mod options;
@@ -32,6 +33,11 @@ fn _sypy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sync::sync, m)?)?;
     m.add_function(wrap_pyfunction!(sync::sync_with_options, m)?)?;
     m.add_function(wrap_pyfunction!(path::parse_path, m)?)?;
+
+    // Register CLI functions
+    m.add_function(wrap_pyfunction!(cli::main, m)?)?;
+    m.add_function(wrap_pyfunction!(cli::run_server, m)?)?;
+    m.add_function(wrap_pyfunction!(cli::run_daemon, m)?)?;
 
     // Add version info
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

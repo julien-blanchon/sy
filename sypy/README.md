@@ -16,6 +16,12 @@ Fast, modern file synchronization in Python - powered by [sy](https://github.com
 pip install sy-python
 ```
 
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv pip install sy-python
+```
+
 Or build from source:
 
 ```bash
@@ -23,6 +29,38 @@ cd sypy
 pip install maturin
 maturin develop
 ```
+
+## Command Line Interface
+
+The `sy-python` package includes the `sy` CLI, making it easy to use from the command line or with tools like `uvx`:
+
+```bash
+# After installation, use sy directly
+sy /source /destination
+
+# Or run as a Python module
+python -m sypy /source /destination
+
+# Run with uvx (no installation needed)
+uvx --from sy-python sy /source /destination
+
+# Show help
+sy --help
+```
+
+### Server & Daemon Modes
+
+For SSH remote syncs, `sy-python` can act as the remote server:
+
+```bash
+# Server mode (used internally by SSH transport)
+sy --server /path/to/serve
+
+# Daemon mode (persistent server for fast repeated syncs)
+sy --daemon --socket ~/.sy/daemon.sock
+```
+
+This means you only need `pip install sy-python` on both local and remote machines - no separate Rust binary installation required!
 
 ## Quick Start
 

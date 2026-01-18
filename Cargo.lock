@@ -2608,6 +2608,7 @@ name = "sypy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs",
  "openssl",
  "pyo3",
  "sy",
