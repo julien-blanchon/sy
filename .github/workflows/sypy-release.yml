@@ -25,7 +25,7 @@ jobs:
               uses: PyO3/maturin-action@v1
               with:
                   target: x86_64
-                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+                  args: --release --out dist --manifest-path sypy/Cargo.toml
                   sccache: "true"
                   manylinux: "2_28"
                   # Native build: use system OpenSSL (faster, no Perl needed)
@@ -51,7 +51,7 @@ jobs:
               uses: PyO3/maturin-action@v1
               with:
                   target: aarch64
-                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+                  args: --release --out dist --manifest-path sypy/Cargo.toml
                   sccache: "true"
                   manylinux: "2_28"
                   # Cross-compile: must use vendored OpenSSL (no cross-compiled headers available)
@@ -80,7 +80,7 @@ jobs:
     #           uses: PyO3/maturin-action@v1
     #           with:
     #               target: ${{ matrix.target }}
-    #               args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+    #               args: --release --out dist --manifest-path sypy/Cargo.toml
     #               sccache: "true"
     #         - name: Upload wheels
     #           uses: actions/upload-artifact@v4
@@ -99,7 +99,7 @@ jobs:
               uses: PyO3/maturin-action@v1
               with:
                   target: ${{ matrix.target }}
-                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+                  args: --release --out dist --manifest-path sypy/Cargo.toml
                   sccache: "true"
             - name: Upload wheels
               uses: actions/upload-artifact@v4
