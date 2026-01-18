@@ -1,4 +1,9 @@
 //! Progress callback bridge for Python
+//!
+//! Note: This module is prepared for future progress callback support.
+//! Currently unused but kept for planned features.
+
+#![allow(dead_code)]
 
 use pyo3::prelude::*;
 use std::sync::Arc;

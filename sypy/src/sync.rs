@@ -311,7 +311,7 @@ async fn do_sync(
     delete_threshold: u8,
     parallel: usize,
     verify: bool,
-    compress: bool,
+    _compress: bool, // TODO: implement compression option
     checksum: bool,
     exclude: Vec<String>,
     include: Vec<String>,
@@ -328,8 +328,8 @@ async fn do_sync(
     exclude_vcs: bool,
     preserve_xattrs: bool,
     preserve_hardlinks: bool,
-    preserve_permissions: bool,
-    preserve_times: bool,
+    _preserve_permissions: bool, // TODO: implement permission preservation
+    _preserve_times: bool,       // TODO: implement time preservation
     retry: u32,
     retry_delay: u64,
 ) -> PyResult<PySyncStats> {

@@ -29,34 +29,36 @@ jobs:
                   target: ${{ matrix.target }}
                   args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
                   sccache: "true"
-                  manylinux: auto
-                  # Install perl modules needed to build vendored OpenSSL
+                  manylinux: "2_28"
+                  # Install perl modules and openssl-devel for vendored OpenSSL build
                   before-script-linux: |
-                      yum install -y perl-IPC-Cmd perl-FindBin || apt-get update && apt-get install -y perl
+                      dnf install -y perl-IPC-Cmd perl-FindBin perl-File-Compare perl-File-Copy openssl-devel
             - name: Upload wheels
               uses: actions/upload-artifact@v4
               with:
                   name: wheels-linux-${{ matrix.target }}
                   path: dist
 
-    windows:
-        runs-on: windows-latest
-        strategy:
-            matrix:
-                target: [x64]
-        steps:
-            - uses: actions/checkout@v4
-            - name: Build wheels
-              uses: PyO3/maturin-action@v1
-              with:
-                  target: ${{ matrix.target }}
-                  args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
-                  sccache: "true"
-            - name: Upload wheels
-              uses: actions/upload-artifact@v4
-              with:
-                  name: wheels-windows-${{ matrix.target }}
-                  path: dist
+    # Windows disabled - requires additional platform-specific work
+    # TODO: Fix Windows build (unix-specific code in handler.rs, missing Win32 API)
+    # windows:
+    #     runs-on: windows-latest
+    #     strategy:
+    #         matrix:
+    #             target: [x64]
+    #     steps:
+    #         - uses: actions/checkout@v4
+    #         - name: Build wheels
+    #           uses: PyO3/maturin-action@v1
+    #           with:
+    #               target: ${{ matrix.target }}
+    #               args: --release --out dist --find-interpreter --manifest-path sypy/Cargo.toml
+    #               sccache: "true"
+    #         - name: Upload wheels
+    #           uses: actions/upload-artifact@v4
+    #           with:
+    #               name: wheels-windows-${{ matrix.target }}
+    #               path: dist
 
     macos:
         runs-on: macos-latest
@@ -96,7 +98,7 @@ jobs:
         name: Release
         runs-on: ubuntu-latest
         if: "startsWith(github.ref, 'refs/tags/sypy-v') && !inputs.dry_run"
-        needs: [linux, windows, macos, sdist]
+        needs: [linux, macos, sdist]
         permissions:
             id-token: write
         environment:
