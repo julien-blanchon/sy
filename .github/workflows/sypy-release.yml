@@ -33,16 +33,23 @@ jobs:
                   # Install OpenSSL dev packages - handle both dnf (native) and apt (cross) containers
                   # See: https://github.com/PyO3/maturin-action/issues/314
                   before-script-linux: |
+                      # Install OpenSSL dev packages
                       if command -v dnf &> /dev/null; then
-                          dnf install -y openssl-devel perl-IPC-Cmd pkg-config
+                          dnf install -y openssl-devel pkg-config
                       elif command -v apt-get &> /dev/null; then
                           apt-get update
                           apt-get install -y libssl-dev pkg-config
                       elif command -v apk &> /dev/null; then
                           apk add openssl-dev pkgconfig
                       fi
-              env:
-                  OPENSSL_NO_VENDOR: "1"
+                      
+                      # CRITICAL: Set OPENSSL_NO_VENDOR via cargo config to use system OpenSSL
+                      # This avoids building OpenSSL from source (which needs many Perl modules)
+                      mkdir -p /home/runner/work/sy/sy/.cargo
+                      cat > /home/runner/work/sy/sy/.cargo/config.toml << 'EOF'
+                      [env]
+                      OPENSSL_NO_VENDOR = "1"
+                      EOF
             - name: Upload wheels
               uses: actions/upload-artifact@v4
               with:
