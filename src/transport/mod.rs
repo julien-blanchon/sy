@@ -1,3 +1,9 @@
+// Shared cloud transport types (available when either S3 or GCS is enabled)
+#[cfg(any(feature = "s3", feature = "gcs"))]
+pub mod cloud;
+#[cfg(any(feature = "s3", feature = "gcs"))]
+pub use cloud::CloudClientOptions;
+
 pub mod dual;
 #[cfg(feature = "gcs")]
 pub mod gcs;
@@ -5,6 +11,13 @@ pub mod local;
 pub mod router;
 #[cfg(feature = "s3")]
 pub mod s3;
+
+// Re-export config types for convenience
+#[cfg(feature = "gcs")]
+pub use gcs::GcsConfig;
+#[cfg(feature = "s3")]
+pub use s3::S3Config;
+
 pub mod server;
 #[cfg(feature = "ssh")]
 pub mod ssh;

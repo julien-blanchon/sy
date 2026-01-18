@@ -1,3 +1,4 @@
+use super::cloud::CloudClientOptions;
 use super::{FileInfo, TransferResult, Transport};
 use crate::error::{Result, SyncError};
 use crate::sync::scanner::{FileEntry, ScanOptions};
@@ -10,6 +11,23 @@ use object_store::ObjectStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
+
+/// GCS configuration for explicit credential and client management
+///
+/// This struct allows configuring GCS credentials and HTTP client behavior
+/// explicitly from code, rather than relying solely on environment variables.
+#[derive(Debug, Clone, Default)]
+pub struct GcsConfig {
+    // === Credentials ===
+    /// Path to service account JSON key file
+    pub credentials_file: Option<String>,
+    /// GCP project ID (usually derived from credentials)
+    pub project_id: Option<String>,
+
+    // === Client Options ===
+    /// HTTP client and retry configuration
+    pub client_options: Option<CloudClientOptions>,
+}
 
 /// GCS transport for Google Cloud Storage operations
 ///
@@ -29,7 +47,7 @@ impl GcsTransport {
     /// # Arguments
     /// * `bucket` - GCS bucket name
     /// * `prefix` - Key prefix (e.g., "backups/")
-    /// * `_project_id` - Optional GCP project ID (unused, derived from credentials)
+    /// * `project_id` - Optional GCP project ID (unused, derived from credentials)
     /// * `service_account_path` - Optional path to service account JSON key
     ///
     /// # Authentication
@@ -40,23 +58,85 @@ impl GcsTransport {
     pub async fn new(
         bucket: String,
         prefix: String,
-        _project_id: Option<String>,
+        project_id: Option<String>,
         service_account_path: Option<String>,
     ) -> Result<Self> {
-        // Build GCS store with object_store, starting from env for default credentials
-        let mut builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(&bucket);
+        Self::with_config(bucket, prefix, project_id, service_account_path, None, 10).await
+    }
 
-        // If explicit service account path provided, use it
+    /// Create a new GCS transport with explicit configuration
+    ///
+    /// # Arguments
+    /// * `bucket` - GCS bucket name
+    /// * `prefix` - Key prefix (e.g., "backups/")
+    /// * `project_id` - Optional GCP project ID
+    /// * `service_account_path` - Optional path to service account JSON key
+    /// * `config` - Optional GcsConfig with explicit credentials and client options
+    /// * `max_connections` - Maximum number of concurrent HTTP connections
+    ///
+    /// # Client Options
+    /// If `config.client_options` is provided, those settings are used.
+    /// Otherwise, sensible defaults optimized for sync operations are applied.
+    pub async fn with_config(
+        bucket: String,
+        prefix: String,
+        project_id: Option<String>,
+        service_account_path: Option<String>,
+        config: Option<GcsConfig>,
+        max_connections: usize,
+    ) -> Result<Self> {
+        // Get client options from config or use defaults
+        let cloud_options = config
+            .as_ref()
+            .and_then(|c| c.client_options.clone())
+            .unwrap_or_default();
+
+        // Build object_store client options
+        let client_options = cloud_options.to_client_options(max_connections);
+        let retry_config = cloud_options.to_retry_config();
+
+        // Build GCS store with object_store
+        let mut builder = GoogleCloudStorageBuilder::from_env()
+            .with_bucket_name(&bucket)
+            .with_client_options(client_options)
+            .with_retry(retry_config);
+
+        // Apply explicit config if provided
+        if let Some(cfg) = &config {
+            if let Some(sa_path) = &cfg.credentials_file {
+                builder = builder.with_service_account_path(sa_path);
+            }
+            if let Some(pid) = &cfg.project_id {
+                // Note: project_id is usually derived from credentials
+                // but can be set explicitly for cross-project access
+                let _ = pid; // Currently not directly settable in GoogleCloudStorageBuilder
+            }
+        }
+
+        // Apply service account path from argument (backward compatibility)
         if let Some(sa_path) = service_account_path {
             builder = builder.with_service_account_path(&sa_path);
         }
 
+        // Apply project ID from argument (backward compatibility)
+        if let Some(_pid) = project_id {
+            // Currently not directly settable in GoogleCloudStorageBuilder
+        }
+
+        let pool_size = max_connections.max(cloud_options.pool_max_idle_per_host);
         let store = Arc::new(builder.build().map_err(|e| {
             SyncError::Io(std::io::Error::other(format!(
                 "Failed to create GCS client: {}",
                 e
             )))
         })?);
+
+        tracing::info!(
+            "GCS transport initialized: pool_size={}, timeout={}s, retries={}",
+            pool_size,
+            cloud_options.request_timeout_secs,
+            cloud_options.max_retries
+        );
 
         Ok(Self { store, prefix })
     }

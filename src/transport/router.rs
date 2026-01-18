@@ -166,13 +166,16 @@ impl TransportRouter {
                 },
             ) => {
                 // Local → S3: use DualTransport (Local for source, S3 for dest)
+                // Use pool_size for S3 connection pool (matches parallelism setting)
                 let source_transport = Box::new(LocalTransport::with_verifier(verifier));
                 let dest_transport = Box::new(
-                    S3Transport::new(
+                    S3Transport::with_config(
                         bucket.clone(),
                         key.clone(),
                         region.clone(),
                         endpoint.clone(),
+                        None,
+                        pool_size,
                     )
                     .await?,
                 );
@@ -191,12 +194,15 @@ impl TransportRouter {
                 SyncPath::Local { .. },
             ) => {
                 // S3 → Local: use DualTransport (S3 for source, Local for dest)
+                // Use pool_size for S3 connection pool (matches parallelism setting)
                 let source_transport = Box::new(
-                    S3Transport::new(
+                    S3Transport::with_config(
                         bucket.clone(),
                         key.clone(),
                         region.clone(),
                         endpoint.clone(),
+                        None,
+                        pool_size,
                     )
                     .await?,
                 );
@@ -237,13 +243,16 @@ impl TransportRouter {
                 },
             ) => {
                 // Local → GCS: use DualTransport (Local for source, GCS for dest)
+                // Use pool_size for GCS connection pool (matches parallelism setting)
                 let source_transport = Box::new(LocalTransport::with_verifier(verifier));
                 let dest_transport = Box::new(
-                    GcsTransport::new(
+                    GcsTransport::with_config(
                         bucket.clone(),
                         key.clone(),
                         project_id.clone(),
                         service_account_path.clone(),
+                        None,
+                        pool_size,
                     )
                     .await?,
                 );
@@ -262,12 +271,15 @@ impl TransportRouter {
                 SyncPath::Local { .. },
             ) => {
                 // GCS → Local: use DualTransport (GCS for source, Local for dest)
+                // Use pool_size for GCS connection pool (matches parallelism setting)
                 let source_transport = Box::new(
-                    GcsTransport::new(
+                    GcsTransport::with_config(
                         bucket.clone(),
                         key.clone(),
                         project_id.clone(),
                         service_account_path.clone(),
+                        None,
+                        pool_size,
                     )
                     .await?,
                 );

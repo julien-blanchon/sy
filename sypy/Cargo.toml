@@ -1,0 +1,37 @@
+[package]
+name = "sypy"
+version = "0.1.0"
+edition = "2021"
+authors = ["Nick Russo <nijaru7@gmail.com>"]
+description = "Python bindings for sy - Modern file synchronization tool"
+repository = "https://github.com/nijaru/sy"
+license = "MIT"
+keywords = ["rsync", "sync", "file-transfer", "python", "pyo3"]
+
+[lib]
+name = "sypy"
+crate-type = ["cdylib"]
+
+[features]
+default = ["ssh", "s3", "gcs"]
+ssh = ["sy/ssh"]
+s3 = ["sy/s3"]
+gcs = ["sy/gcs"]
+acl = ["sy/acl"]
+
+[dependencies]
+# PyO3 for Python bindings
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+
+# The sy crate (parent directory)
+sy = { path = ".." }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+[dev-dependencies]
+pyo3 = { version = "0.22", features = ["auto-initialize"] }

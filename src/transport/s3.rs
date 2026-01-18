@@ -1,3 +1,4 @@
+use super::cloud::CloudClientOptions;
 use super::{FileInfo, TransferResult, Transport};
 use crate::error::{Result, SyncError};
 use crate::sync::scanner::{FileEntry, ScanOptions};
@@ -10,6 +11,29 @@ use object_store::ObjectStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
+
+/// S3 configuration for explicit credential and client management
+///
+/// This struct allows configuring S3 credentials and HTTP client behavior
+/// explicitly from code, rather than relying solely on environment variables.
+#[derive(Debug, Clone, Default)]
+pub struct S3Config {
+    // === Credentials ===
+    /// AWS access key ID
+    pub access_key_id: Option<String>,
+    /// AWS secret access key
+    pub secret_access_key: Option<String>,
+    /// AWS region (e.g., "us-east-1")
+    pub region: Option<String>,
+    /// Custom S3-compatible endpoint URL (e.g., for DigitalOcean Spaces, MinIO)
+    pub endpoint: Option<String>,
+    /// AWS profile name to use from ~/.aws/credentials
+    pub profile: Option<String>,
+
+    // === Client Options ===
+    /// HTTP client and retry configuration
+    pub client_options: Option<CloudClientOptions>,
+}
 
 /// S3 transport for cloud storage operations
 ///
@@ -40,11 +64,69 @@ impl S3Transport {
         region: Option<String>,
         endpoint: Option<String>,
     ) -> Result<Self> {
-        // Build S3 store with object_store
-        // Start with from_env() to pick up AWS credentials from environment
-        let mut builder = AmazonS3Builder::from_env().with_bucket_name(&bucket);
+        Self::with_config(bucket, prefix, region, endpoint, None, 10).await
+    }
 
-        // Apply region from argument or environment
+    /// Create a new S3 transport with explicit configuration
+    ///
+    /// # Arguments
+    /// * `bucket` - S3 bucket name
+    /// * `prefix` - Key prefix (e.g., "backups/")
+    /// * `region` - Optional AWS region (defaults to config/env)
+    /// * `endpoint` - Optional custom endpoint
+    /// * `config` - Optional S3Config with explicit credentials and client options
+    /// * `max_connections` - Maximum number of concurrent HTTP connections (default: 10)
+    ///
+    /// # Client Options
+    /// If `config.client_options` is provided, those settings are used.
+    /// Otherwise, sensible defaults optimized for sync operations are applied:
+    /// - Connection pool sized to `max_connections`
+    /// - 30 second idle timeout
+    /// - 5 second connect timeout
+    /// - 60 second request timeout
+    /// - 3 retries with 15 second retry timeout
+    pub async fn with_config(
+        bucket: String,
+        prefix: String,
+        region: Option<String>,
+        endpoint: Option<String>,
+        config: Option<S3Config>,
+        max_connections: usize,
+    ) -> Result<Self> {
+        // Get client options from config or use defaults
+        let cloud_options = config
+            .as_ref()
+            .and_then(|c| c.client_options.clone())
+            .unwrap_or_default();
+
+        // Build object_store client options
+        let client_options = cloud_options.to_client_options(max_connections);
+        let retry_config = cloud_options.to_retry_config();
+
+        // Build S3 store with object_store
+        let mut builder = AmazonS3Builder::from_env()
+            .with_bucket_name(&bucket)
+            .with_client_options(client_options)
+            .with_retry(retry_config);
+
+        // Apply explicit config if provided
+        if let Some(cfg) = config {
+            if let Some(key) = cfg.access_key_id {
+                builder = builder.with_access_key_id(&key);
+            }
+            if let Some(secret) = cfg.secret_access_key {
+                builder = builder.with_secret_access_key(&secret);
+            }
+            if let Some(r) = cfg.region {
+                builder = builder.with_region(&r);
+            }
+            if let Some(ep) = cfg.endpoint {
+                builder = builder.with_endpoint(&ep);
+                builder = builder.with_virtual_hosted_style_request(false);
+            }
+        }
+
+        // Apply region from argument or environment (if not set by config)
         if let Some(r) = region {
             builder = builder.with_region(&r);
         } else if let Ok(r) = std::env::var("AWS_REGION") {
@@ -53,10 +135,9 @@ impl S3Transport {
             builder = builder.with_region(&r);
         }
 
-        // Apply endpoint from argument or environment
+        // Apply endpoint from argument or environment (if not set by config)
         if let Some(ep) = endpoint {
             builder = builder.with_endpoint(&ep);
-            // For S3-compatible services (DigitalOcean, R2, etc.), use virtual-hosted style
             builder = builder.with_virtual_hosted_style_request(false);
         } else if let Ok(ep) = std::env::var("AWS_ENDPOINT_URL") {
             builder = builder.with_endpoint(&ep);
@@ -64,9 +145,9 @@ impl S3Transport {
         }
 
         // Skip credential loading retries on non-AWS environments
-        // This prevents long timeouts when EC2 metadata service is unavailable
         builder = builder.with_skip_signature(false);
 
+        let pool_size = max_connections.max(cloud_options.pool_max_idle_per_host);
         let store = Arc::new(builder.build().map_err(|e| {
             SyncError::Io(std::io::Error::other(format!(
                 "Failed to create S3 client: {}. \
@@ -74,6 +155,13 @@ impl S3Transport {
                 e
             )))
         })?);
+
+        tracing::info!(
+            "S3 transport initialized: pool_size={}, timeout={}s, retries={}",
+            pool_size,
+            cloud_options.request_timeout_secs,
+            cloud_options.max_retries
+        );
 
         Ok(Self { store, prefix })
     }
