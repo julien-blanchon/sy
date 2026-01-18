@@ -6,6 +6,7 @@ authors = ["Nick Russo <nijaru7@gmail.com>"]
 description = "Python bindings for sy - Modern file synchronization tool"
 repository = "https://github.com/nijaru/sy"
 license = "MIT"
+readme = "README.md"
 keywords = ["rsync", "sync", "file-transfer", "python", "pyo3"]
 
 [lib]
