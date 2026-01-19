@@ -261,7 +261,7 @@ async fn drain_pending_checksums<W: AsyncWriteExt + Unpin>(
 }
 
 /// PULL mode: Server scans source and sends files to client
-async fn run_server_pull_mode<R, W>(root_path: &Path, stdin: &mut R, stdout: &mut W) -> Result<()>
+pub async fn run_server_pull_mode<R, W>(root_path: &Path, stdin: &mut R, stdout: &mut W) -> Result<()>
 where
     R: AsyncReadExt + Unpin,
     W: AsyncWriteExt + Unpin,

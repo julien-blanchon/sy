@@ -101,6 +101,13 @@ async fn run_server_with_path(path: &str) -> anyhow::Result<()> {
     resp.write(&mut stdout).await?;
     stdout.flush().await?;
 
+    // Check if client requested PULL mode (server sends files to client)
+    use sy::server::protocol::HELLO_FLAG_PULL;
+    if hello.flags & HELLO_FLAG_PULL != 0 {
+        return sy::server::run_server_pull_mode(&root_path, &mut stdin, &mut stdout).await
+            .map_err(|e| anyhow::anyhow!("Pull mode error: {}", e));
+    }
+
     // Shared state for concurrent CHECKSUM_REQ handling
     let mut file_list: Option<Arc<Vec<FileListEntry>>> = None;
     let root_path_arc = Arc::new(root_path);
