@@ -44,10 +44,21 @@ pub async fn sync_server_mode(
     dry_run: bool,
     progress: Option<Arc<ProgressState>>,
 ) -> Result<SyncStats> {
+    sync_server_mode_with_config(source, dest, dry_run, progress, None).await
+}
+
+/// Sync from local source to remote destination using server protocol with optional SSH config
+pub async fn sync_server_mode_with_config(
+    source: &Path,
+    dest: &SyncPath,
+    dry_run: bool,
+    progress: Option<Arc<ProgressState>>,
+    ssh_config: Option<&SshConfig>,
+) -> Result<SyncStats> {
     let start = Instant::now();
 
     // Connect to server
-    let mut session = connect(dest).await?;
+    let mut session = connect_with_config(dest, ssh_config).await?;
     tracing::debug!("Connected to server (dry_run: {})", dry_run);
 
     // Scan source
@@ -547,15 +558,32 @@ pub async fn sync_server_mode(
 
 /// Connect to remote server
 async fn connect(dest: &SyncPath) -> Result<ServerSession> {
+    connect_with_config(dest, None).await
+}
+
+/// Connect to remote server with optional SSH config override
+async fn connect_with_config(
+    dest: &SyncPath,
+    ssh_config_override: Option<&SshConfig>,
+) -> Result<ServerSession> {
     match dest {
         SyncPath::Local { path, .. } => ServerSession::connect_local(path).await,
         SyncPath::Remote {
             host, user, path, ..
         } => {
-            let config = SshConfig {
-                hostname: host.clone(),
-                user: user.clone().unwrap_or_default(),
-                ..Default::default()
+            let mut config = if let Some(override_config) = ssh_config_override {
+                // Use provided config but update host and user from path
+                let mut c = override_config.clone();
+                c.hostname = host.clone();
+                c.user = user.clone().unwrap_or_else(|| whoami::username());
+                c
+            } else {
+                // Try to parse from SSH config file, fallback to defaults
+                crate::ssh::config::parse_ssh_config(host).unwrap_or_else(|_| {
+                    let mut c = SshConfig::new(host);
+                    c.user = user.clone().unwrap_or_else(|| whoami::username());
+                    c
+                })
             };
             ServerSession::connect_ssh(&config, path).await
         }
@@ -618,10 +646,21 @@ pub async fn sync_pull_server_mode(
     dry_run: bool,
     progress: Option<Arc<ProgressState>>,
 ) -> Result<SyncStats> {
+    sync_pull_server_mode_with_config(source, dest, dry_run, progress, None).await
+}
+
+/// Sync from remote source to local destination using server protocol (PULL mode) with optional SSH config
+pub async fn sync_pull_server_mode_with_config(
+    source: &SyncPath,
+    dest: &Path,
+    dry_run: bool,
+    progress: Option<Arc<ProgressState>>,
+    ssh_config: Option<&SshConfig>,
+) -> Result<SyncStats> {
     let start = Instant::now();
 
     // Connect to server in PULL mode
-    let mut session = connect_pull(source).await?;
+    let mut session = connect_pull_with_config(source, ssh_config).await?;
     tracing::debug!("Connected to server (PULL mode, dry_run: {})", dry_run);
 
     // Ensure local destination exists
@@ -952,15 +991,31 @@ pub async fn sync_pull_server_mode(
 
 /// Connect to remote server in PULL mode
 async fn connect_pull(source: &SyncPath) -> Result<ServerSession> {
+    connect_pull_with_config(source, None).await
+}
+
+async fn connect_pull_with_config(
+    source: &SyncPath,
+    ssh_config_override: Option<&SshConfig>,
+) -> Result<ServerSession> {
     match source {
         SyncPath::Local { path, .. } => ServerSession::connect_local_pull(path).await,
         SyncPath::Remote {
             host, user, path, ..
         } => {
-            let config = SshConfig {
-                hostname: host.clone(),
-                user: user.clone().unwrap_or_default(),
-                ..Default::default()
+            let config = if let Some(override_config) = ssh_config_override {
+                // Use provided config but update host and user from path
+                let mut c = override_config.clone();
+                c.hostname = host.clone();
+                c.user = user.clone().unwrap_or_else(|| whoami::username());
+                c
+            } else {
+                // Try to parse from SSH config file, fallback to defaults
+                crate::ssh::config::parse_ssh_config(host).unwrap_or_else(|_| {
+                    let mut c = SshConfig::new(host);
+                    c.user = user.clone().unwrap_or_else(|| whoami::username());
+                    c
+                })
             };
             ServerSession::connect_ssh_pull(&config, path).await
         }

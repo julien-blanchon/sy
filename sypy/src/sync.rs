@@ -143,8 +143,7 @@ pub fn sync(
     if let Some(ref gcs_config) = gcs {
         gcs_config.apply_to_env();
     }
-    // SSH config is handled differently - it's passed to the transport
-    let _ = ssh; // Mark as used for now
+    // SSH config will be passed to server mode functions
 
     // Parse size options
     let min_size_bytes = min_size
@@ -205,6 +204,7 @@ pub fn sync(
                 preserve_times,
                 retry,
                 retry_delay,
+                ssh,
             )
             .await
         })
@@ -307,6 +307,7 @@ pub fn sync_with_options(
                 options.preserve_times,
                 options.retry,
                 options.retry_delay,
+                options.ssh,
             )
             .await
         })
@@ -346,6 +347,7 @@ async fn do_sync(
     _preserve_times: bool,       // TODO: implement time preservation
     retry: u32,
     retry_delay: u64,
+    ssh: Option<PySshConfig>,
 ) -> PyResult<PySyncStats> {
     // Checksum type for verification
     let checksum_type = if verify {
@@ -410,13 +412,33 @@ async fn do_sync(
             _ => (None, None),
         };
 
-        let stats = sy::sync::server_mode::sync_server_mode(
-            source.path(),
-            &dest,
-            dry_run,
-            live_progress.clone(),
-        )
-        .await
+        // Convert Python SSH config to Rust if provided
+        let rust_ssh_config = ssh.as_ref().and_then(|py_ssh| {
+            if let SyncPath::Remote { host, user, .. } = &dest {
+                Some(py_ssh.to_sy_ssh_config(host, user.as_deref().unwrap_or("root")))
+            } else {
+                None
+            }
+        });
+
+        let stats = if let Some(ref config) = rust_ssh_config {
+            sy::sync::server_mode::sync_server_mode_with_config(
+                source.path(),
+                &dest,
+                dry_run,
+                live_progress.clone(),
+                Some(config),
+            )
+            .await
+        } else {
+            sy::sync::server_mode::sync_server_mode(
+                source.path(),
+                &dest,
+                dry_run,
+                live_progress.clone(),
+            )
+            .await
+        }
         .map_err(anyhow_to_pyerr);
 
         // Stop the progress sampler and send final callback
@@ -448,13 +470,33 @@ async fn do_sync(
             _ => (None, None),
         };
 
-        let stats = sy::sync::server_mode::sync_pull_server_mode(
-            &source,
-            dest.path(),
-            dry_run,
-            live_progress.clone(),
-        )
-        .await
+        // Convert Python SSH config to Rust if provided
+        let rust_ssh_config = ssh.as_ref().and_then(|py_ssh| {
+            if let SyncPath::Remote { host, user, .. } = &source {
+                Some(py_ssh.to_sy_ssh_config(host, user.as_deref().unwrap_or("root")))
+            } else {
+                None
+            }
+        });
+
+        let stats = if let Some(ref config) = rust_ssh_config {
+            sy::sync::server_mode::sync_pull_server_mode_with_config(
+                &source,
+                dest.path(),
+                dry_run,
+                live_progress.clone(),
+                Some(config),
+            )
+            .await
+        } else {
+            sy::sync::server_mode::sync_pull_server_mode(
+                &source,
+                dest.path(),
+                dry_run,
+                live_progress.clone(),
+            )
+            .await
+        }
         .map_err(anyhow_to_pyerr);
 
         // Stop the progress sampler and send final callback
