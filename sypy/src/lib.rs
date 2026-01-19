@@ -3,6 +3,9 @@
 //! This module provides PyO3-based Python bindings for the sy Rust crate,
 //! exposing all major sync functionality with a Pythonic API.
 
+// False positive: clippy flags return type annotations as "useless conversions"
+#![allow(clippy::useless_conversion)]
+
 mod cli;
 mod config;
 mod dryrun;
@@ -10,7 +13,7 @@ mod error;
 mod ls;
 mod options;
 mod path;
-mod progress;
+pub mod progress;
 mod stats;
 mod sync;
 
@@ -38,6 +41,9 @@ fn _sypy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<dryrun::PyDirectoryChange>()?;
     m.add_class::<dryrun::PySymlinkChange>()?;
     m.add_class::<dryrun::PyDryRunDetails>()?;
+
+    // Register progress classes
+    m.add_class::<progress::PyProgressSnapshot>()?;
 
     // Register functions
     m.add_function(wrap_pyfunction!(sync::sync, m)?)?;

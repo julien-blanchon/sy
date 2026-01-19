@@ -81,6 +81,59 @@ sypy.sync("/local/", "gs://bucket/path/", gcs=gcs)
 
 ---
 
+## Progress Callbacks
+
+You can receive **real-time progress updates** during `sypy.sync()` by providing a
+`progress_callback`. The callback receives a `sypy.ProgressSnapshot` object.
+
+- **Callback signature**: `progress_callback(snapshot: sypy.ProgressSnapshot) -> None`
+- **Frequency**: control update rate with `progress_frequency_ms` (default: `1000`)
+- **Errors**: if your callback raises, the error is printed and the sync continues (keep it fast and robust)
+
+### Example: print throughput + active transfers
+
+```python
+import sypy
+
+
+def progress_callback(snapshot: sypy.ProgressSnapshot) -> None:
+    pct = f"{snapshot.percentage:.1f}%" if snapshot.percentage is not None else "N/A"
+    speed_mb = snapshot.bytes_per_sec / (1024 * 1024) if snapshot.bytes_per_sec else 0.0
+    transferring = list(snapshot.transferring)[:2] if snapshot.transferring else []
+
+    print(
+        f"  [{pct}] {snapshot.bytes}/{snapshot.total_bytes} bytes, "
+        f"{snapshot.transfers}/{snapshot.total_transfers} files, "
+        f"{speed_mb:.2f} MB/s, active={snapshot.active_transfers}"
+    )
+    if transferring:
+        print(f"    Transferring: {transferring}")
+
+
+source = "/source/"
+dest = "/dest/"
+
+stats = sypy.sync(
+    source,
+    dest,
+    progress_callback=progress_callback,
+    progress_frequency_ms=200,
+)
+print(f"Done: {stats.bytes_transferred:,} bytes transferred")
+```
+
+### `ProgressSnapshot` fields (most useful)
+
+- **`bytes` / `total_bytes`**: bytes completed vs estimated total (total may be 0 early on)
+- **`bytes_per_sec`**: instantaneous speed in bytes/sec
+- **`percentage`**: float \(0.0..100.0\), or `None` if total is unknown
+- **`transfers` / `total_transfers`**: completed vs planned file transfers
+- **`active_transfers`**: number of in-flight transfers
+- **`transferring`**: list of paths currently being transferred
+- **Convenience**: `current_file`, `speed_human`, `eta_secs`, `bytes_human`, `total_bytes_human`
+
+---
+
 ## Local Sync
 
 ### Basic Directory Sync

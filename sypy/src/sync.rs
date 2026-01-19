@@ -3,15 +3,17 @@
 use crate::config::{PyGcsConfig, PyS3Config, PySshConfig};
 use crate::error::{anyhow_to_pyerr, sync_error_to_pyerr};
 use crate::options::{parse_size_option, PySyncOptions};
-use crate::progress::ProgressCallback;
+use crate::progress::ProgressSampler;
 use crate::stats::PySyncStats;
 use pyo3::prelude::*;
 use std::path::PathBuf;
+use std::sync::Arc;
 use sy::cli::SymlinkMode;
 use sy::filter::FilterEngine;
 use sy::integrity::ChecksumType;
 use sy::path::SyncPath;
 use sy::retry::RetryConfig;
+use sy::sync::live_progress::ProgressState;
 use sy::sync::scanner::ScanOptions;
 use sy::sync::SyncEngine;
 use sy::transport::router::TransportRouter;
@@ -35,7 +37,8 @@ use sy::transport::router::TransportRouter;
 ///     min_size: Minimum file size (e.g., "1MB")
 ///     max_size: Maximum file size (e.g., "1GB")
 ///     bwlimit: Bandwidth limit (e.g., "10MB")
-///     progress_callback: Callback function for progress updates
+///     progress_callback: Callback function receiving ProgressSnapshot objects
+///     progress_frequency_ms: How often to call the progress callback (milliseconds, default: 1000)
 ///     daemon_auto: Use daemon mode for fast repeated syncs
 ///     s3: S3Config for S3/S3-compatible storage credentials
 ///     gcs: GcsConfig for Google Cloud Storage credentials
@@ -47,6 +50,11 @@ use sy::transport::router::TransportRouter;
 /// Example:
 ///     >>> stats = sync("/source", "/dest", dry_run=True)
 ///     >>> print(f"Would sync {stats.files_scanned} files")
+///
+///     >>> # With progress callback
+///     >>> def on_progress(snapshot):
+///     ...     print(f"{snapshot.percentage:.1f}% - {snapshot.speed_human}")
+///     >>> stats = sync("/source", "/dest", progress_callback=on_progress, progress_frequency_ms=500)
 ///
 ///     >>> # With S3 credentials
 ///     >>> s3 = S3Config(access_key_id="...", secret_access_key="...", region="us-east-1")
@@ -72,6 +80,7 @@ use sy::transport::router::TransportRouter;
     max_size = None,
     bwlimit = None,
     progress_callback = None,
+    progress_frequency_ms = 1000,
     daemon_auto = false,
     resume = true,
     ignore_times = false,
@@ -90,6 +99,7 @@ use sy::transport::router::TransportRouter;
     gcs = None,
     ssh = None
 ))]
+#[allow(clippy::too_many_arguments)]
 pub fn sync(
     py: Python<'_>,
     source: &str,
@@ -107,6 +117,7 @@ pub fn sync(
     max_size: Option<String>,
     bwlimit: Option<String>,
     progress_callback: Option<PyObject>,
+    progress_frequency_ms: u64,
     daemon_auto: bool,
     resume: bool,
     ignore_times: bool,
@@ -139,24 +150,21 @@ pub fn sync(
     let min_size_bytes = min_size
         .map(|s| parse_size_option(&s))
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let max_size_bytes = max_size
         .map(|s| parse_size_option(&s))
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let bwlimit_bytes = bwlimit
         .map(|s| parse_size_option(&s))
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     // Parse paths
     let source_path = SyncPath::parse(source);
     let dest_path = SyncPath::parse(dest);
-
-    // Create progress callback if provided
-    let _progress_cb = progress_callback.map(ProgressCallback::new);
 
     // Run the sync operation
     // Release the GIL during the sync to allow other Python threads to run
@@ -181,6 +189,8 @@ pub fn sync(
                 min_size_bytes,
                 max_size_bytes,
                 bwlimit_bytes,
+                progress_callback,
+                progress_frequency_ms,
                 daemon_auto,
                 resume,
                 ignore_times,
@@ -210,18 +220,20 @@ pub fn sync(
 ///     source: Source path
 ///     dest: Destination path
 ///     options: SyncOptions configuration object
-///     progress_callback: Optional progress callback
+///     progress_callback: Optional progress callback receiving ProgressSnapshot objects
+///     progress_frequency_ms: How often to call the progress callback (milliseconds, default: 1000)
 ///
 /// Returns:
 ///     SyncStats: Statistics from the sync operation
 #[pyfunction]
-#[pyo3(signature = (source, dest, options, progress_callback = None))]
+#[pyo3(signature = (source, dest, options, progress_callback = None, progress_frequency_ms = 1000))]
 pub fn sync_with_options(
     py: Python<'_>,
     source: &str,
     dest: &str,
     options: PySyncOptions,
     progress_callback: Option<PyObject>,
+    progress_frequency_ms: u64,
 ) -> PyResult<PySyncStats> {
     // Apply cloud/SSH configs if provided
     if let Some(ref s3_config) = options.s3 {
@@ -238,28 +250,25 @@ pub fn sync_with_options(
         .clone()
         .map(|s| parse_size_option(&s))
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let max_size_bytes = options
         .max_size
         .clone()
         .map(|s| parse_size_option(&s))
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let bwlimit_bytes = options
         .bwlimit
         .clone()
         .map(|s| parse_size_option(&s))
         .transpose()
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     // Parse paths
     let source_path = SyncPath::parse(source);
     let dest_path = SyncPath::parse(dest);
-
-    // Create progress callback if provided
-    let _progress_cb = progress_callback.map(ProgressCallback::new);
 
     // Run the sync operation
     py.allow_threads(|| {
@@ -282,6 +291,8 @@ pub fn sync_with_options(
                 min_size_bytes,
                 max_size_bytes,
                 bwlimit_bytes,
+                progress_callback,
+                progress_frequency_ms,
                 options.daemon_auto,
                 options.resume,
                 options.ignore_times,
@@ -303,6 +314,7 @@ pub fn sync_with_options(
 }
 
 /// Internal sync implementation
+#[allow(clippy::too_many_arguments)]
 async fn do_sync(
     source: SyncPath,
     dest: SyncPath,
@@ -318,6 +330,8 @@ async fn do_sync(
     min_size: Option<u64>,
     max_size: Option<u64>,
     bwlimit: Option<u64>,
+    progress_callback: Option<PyObject>,
+    progress_frequency_ms: u64,
     daemon_auto: bool,
     resume: bool,
     ignore_times: bool,
@@ -379,18 +393,78 @@ async fn do_sync(
     // Handle server mode for SSH syncs
     if source.is_local() && dest.is_remote() {
         // Local -> Remote: use server mode (push)
-        let stats = sy::sync::server_mode::sync_server_mode(source.path(), &dest, dry_run)
-            .await
-            .map_err(anyhow_to_pyerr)?;
-        return Ok(PySyncStats::from(stats));
+        // Set up progress tracking for SSH
+        let live_progress = progress_callback.as_ref().map(|_| ProgressState::new());
+
+        let (sampler, callback_for_final) = match (&progress_callback, &live_progress) {
+            (Some(callback), Some(progress)) => {
+                let (callback_for_sampler, callback_clone) =
+                    Python::with_gil(|py| (callback.clone_ref(py), callback.clone_ref(py)));
+                let sampler = ProgressSampler::start(
+                    Arc::clone(progress),
+                    callback_for_sampler,
+                    progress_frequency_ms,
+                );
+                (Some(sampler), Some(callback_clone))
+            }
+            _ => (None, None),
+        };
+
+        let stats = sy::sync::server_mode::sync_server_mode(
+            source.path(),
+            &dest,
+            dry_run,
+            live_progress.clone(),
+        )
+        .await
+        .map_err(anyhow_to_pyerr);
+
+        // Stop the progress sampler and send final callback
+        if let (Some(s), Some(callback), Some(progress)) =
+            (sampler, callback_for_final, &live_progress)
+        {
+            s.stop_with_final(progress, &callback);
+        }
+
+        return stats.map(PySyncStats::from);
     }
 
     if source.is_remote() && dest.is_local() {
         // Remote -> Local: use server mode (pull)
-        let stats = sy::sync::server_mode::sync_pull_server_mode(&source, dest.path(), dry_run)
-            .await
-            .map_err(anyhow_to_pyerr)?;
-        return Ok(PySyncStats::from(stats));
+        // Set up progress tracking for SSH
+        let live_progress = progress_callback.as_ref().map(|_| ProgressState::new());
+
+        let (sampler, callback_for_final) = match (&progress_callback, &live_progress) {
+            (Some(callback), Some(progress)) => {
+                let (callback_for_sampler, callback_clone) =
+                    Python::with_gil(|py| (callback.clone_ref(py), callback.clone_ref(py)));
+                let sampler = ProgressSampler::start(
+                    Arc::clone(progress),
+                    callback_for_sampler,
+                    progress_frequency_ms,
+                );
+                (Some(sampler), Some(callback_clone))
+            }
+            _ => (None, None),
+        };
+
+        let stats = sy::sync::server_mode::sync_pull_server_mode(
+            &source,
+            dest.path(),
+            dry_run,
+            live_progress.clone(),
+        )
+        .await
+        .map_err(anyhow_to_pyerr);
+
+        // Stop the progress sampler and send final callback
+        if let (Some(s), Some(callback), Some(progress)) =
+            (sampler, callback_for_final, &live_progress)
+        {
+            s.stop_with_final(progress, &callback);
+        }
+
+        return stats.map(PySyncStats::from);
     }
 
     // Create transport router for other cases
@@ -421,8 +495,11 @@ async fn do_sync(
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     }
 
+    // Create live progress state if callback is provided
+    let live_progress = progress_callback.as_ref().map(|_| ProgressState::new());
+
     // Create sync engine
-    let engine = SyncEngine::new(
+    let mut engine = SyncEngine::new(
         transport,
         dry_run,
         false, // diff_mode
@@ -463,16 +540,40 @@ async fn do_sync(
         false, // perf
     );
 
+    // Attach live progress state if available
+    if let Some(ref progress) = live_progress {
+        engine = engine.with_live_progress(Arc::clone(progress));
+    }
+
+    // Start progress sampler thread if callback is provided
+    // We need to clone the callback for the sampler thread and keep one for the final call
+    let (sampler, callback_for_final) = match (progress_callback, &live_progress) {
+        (Some(callback), Some(progress)) => {
+            // Clone callback for final use (need GIL for PyObject cloning)
+            let callback_clone = Python::with_gil(|py| callback.clone_ref(py));
+            let sampler =
+                ProgressSampler::start(Arc::clone(progress), callback, progress_frequency_ms);
+            (Some(sampler), Some(callback_clone))
+        }
+        _ => (None, None),
+    };
+
     // Compute effective destination path
     let effective_dest = compute_destination_path(&source, &dest);
 
     // Run sync
-    let stats = engine
+    let result = engine
         .sync(source.path(), &effective_dest)
         .await
-        .map_err(sync_error_to_pyerr)?;
+        .map_err(sync_error_to_pyerr);
 
-    Ok(PySyncStats::from(stats))
+    // Stop the progress sampler and send a final callback with complete stats
+    if let (Some(s), Some(callback), Some(progress)) = (sampler, callback_for_final, &live_progress)
+    {
+        s.stop_with_final(progress, &callback);
+    }
+
+    result.map(PySyncStats::from)
 }
 
 /// Compute effective destination path based on rsync trailing slash semantics

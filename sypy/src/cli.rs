@@ -347,6 +347,7 @@ pub fn main(py: Python<'_>, args: Option<Vec<String>>) -> PyResult<i32> {
             None,   // max_size
             None,   // bwlimit
             None,   // progress_callback
+            1000,   // progress_frequency_ms
             false,  // daemon_auto
             true,   // resume
             false,  // ignore_times

@@ -200,6 +200,55 @@ class SyncStats:
     @property
     def dry_run_summary(self) -> dict[str, dict[str, int] | int]: ...
 
+class ProgressSnapshot:
+    total_bytes: int
+    """Estimated total bytes to process (may be 0 if unknown)."""
+
+    bytes: int
+    """Bytes completed so far."""
+
+    bytes_per_sec: int
+    """Instantaneous speed in bytes per second."""
+
+    transfers: int
+    """Number of transfers (files) completed."""
+
+    total_transfers: int
+    """Total number of transfers planned."""
+
+    active_transfers: int
+    """Number of currently active (in-flight) transfers."""
+
+    percentage: float | None
+    """Percentage complete (0.0 to 100.0), None if total_bytes is 0/unknown."""
+
+    elapsed_secs: float
+    """Elapsed time in seconds since sync started."""
+
+    @property
+    def transferring(self) -> list[str]: ...
+    """List of currently transferring file paths."""
+
+    @property
+    def current_file(self) -> str | None: ...
+    """Current file being transferred (first in transferring list), or None."""
+
+    @property
+    def speed_human(self) -> str: ...
+    """Speed as a human-readable string (e.g., "10.5 MB/s")."""
+
+    @property
+    def bytes_human(self) -> str: ...
+    """Bytes as a human-readable string (e.g., "1.5 GB")."""
+
+    @property
+    def total_bytes_human(self) -> str: ...
+    """Total bytes as a human-readable string (e.g., "10.2 GB")."""
+
+    @property
+    def eta_secs(self) -> float | None: ...
+    """Estimated time remaining in seconds, or None if unknown."""
+
 class SyncPath:
     def __init__(self, path: str) -> None: ...
     @property
@@ -369,15 +418,12 @@ class SyncOptions:
     ) -> None: ...
 
 # Type alias for progress callback
-type ProgressCallback = Callable[[int, int, str, str], None]
+type ProgressCallback = Callable[[ProgressSnapshot], None]
 """
 Progress callback function signature.
 
 Args:
-    current: Current progress count
-    total: Total count
-    path: Current file path
-    action: Current action ("scanning", "creating", "updating", etc.)
+    snapshot: ProgressSnapshot describing current sync state
 """
 
 def sync(
@@ -397,6 +443,7 @@ def sync(
     max_size: str | None = None,
     bwlimit: str | None = None,
     progress_callback: ProgressCallback | None = None,
+    progress_frequency_ms: int = 1000,
     daemon_auto: bool = False,
     resume: bool = True,
     ignore_times: bool = False,
@@ -420,6 +467,7 @@ def sync_with_options(
     dest: str,
     options: SyncOptions,
     progress_callback: ProgressCallback | None = None,
+    progress_frequency_ms: int = 1000,
 ) -> SyncStats: ...
 def parse_path(path: str) -> SyncPath: ...
 

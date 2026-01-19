@@ -1,12 +1,11 @@
 //! Python wrappers for dry-run details
 
 use pyo3::prelude::*;
-use std::path::PathBuf;
 use sy::sync::{ChangeAction, DirectoryChange, DryRunDetails, FileChange, SymlinkChange};
 
 /// Action type for file/directory/symlink changes
-#[pyclass(name = "ChangeAction")]
-#[derive(Clone, Debug)]
+#[pyclass(name = "ChangeAction", eq, eq_int)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PyChangeAction {
     Create,
     Update,

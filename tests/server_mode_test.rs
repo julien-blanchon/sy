@@ -54,7 +54,7 @@ mod tests {
         let new_path = format!("{}:{}", sy_bin.parent().unwrap().display(), path_env);
         std::env::set_var("PATH", new_path);
 
-        sync_server_mode(&source, &dest_sync_path, false).await?;
+        sync_server_mode(&source, &dest_sync_path, false, None).await?;
 
         // Verify
         assert!(dest.join("file1.txt").exists());
@@ -107,7 +107,7 @@ mod tests {
             has_trailing_slash: false,
         };
 
-        sync_pull_server_mode(&source_sync_path, &dest, false).await?;
+        sync_pull_server_mode(&source_sync_path, &dest, false, None).await?;
 
         // Verify
         assert!(dest.join("file1.txt").exists());

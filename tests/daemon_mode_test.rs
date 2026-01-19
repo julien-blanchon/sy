@@ -37,9 +37,8 @@ async fn test_daemon_lifecycle() {
     let socket_str = socket_path.to_string_lossy().to_string();
     let root = root_path.clone();
 
-    let daemon_handle = tokio::spawn(async move {
-        sy::server::daemon::run_daemon(&socket_str, &root).await
-    });
+    let daemon_handle =
+        tokio::spawn(async move { sy::server::daemon::run_daemon(&socket_str, &root).await });
 
     // Give daemon time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -66,9 +65,8 @@ async fn test_daemon_session_connect() {
     let socket_str = socket_path.to_string_lossy().to_string();
     let root = root_path.clone();
 
-    let daemon_handle = tokio::spawn(async move {
-        sy::server::daemon::run_daemon(&socket_str, &root).await
-    });
+    let daemon_handle =
+        tokio::spawn(async move { sy::server::daemon::run_daemon(&socket_str, &root).await });
 
     // Give daemon time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -110,9 +108,8 @@ async fn test_daemon_session_ping() {
     let socket_str = socket_path.to_string_lossy().to_string();
     let root = root_path.clone();
 
-    let daemon_handle = tokio::spawn(async move {
-        sy::server::daemon::run_daemon(&socket_str, &root).await
-    });
+    let daemon_handle =
+        tokio::spawn(async move { sy::server::daemon::run_daemon(&socket_str, &root).await });
 
     // Give daemon time to start
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -152,9 +149,8 @@ async fn test_daemon_sync_push() {
     let socket_str = socket_path.to_string_lossy().to_string();
     let root = root_path.clone();
 
-    let daemon_handle = tokio::spawn(async move {
-        sy::server::daemon::run_daemon(&socket_str, &root).await
-    });
+    let daemon_handle =
+        tokio::spawn(async move { sy::server::daemon::run_daemon(&socket_str, &root).await });
 
     // Give daemon time to start
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -168,11 +164,18 @@ async fn test_daemon_sync_push() {
     )
     .await;
 
-    assert!(sync_result.is_ok(), "Sync should succeed: {:?}", sync_result);
+    assert!(
+        sync_result.is_ok(),
+        "Sync should succeed: {:?}",
+        sync_result
+    );
 
     let stats = sync_result.unwrap();
     assert_eq!(stats.files_created, 3, "Should create 3 files");
-    assert!(stats.dirs_created >= 1, "Should create at least 1 directory");
+    assert!(
+        stats.dirs_created >= 1,
+        "Should create at least 1 directory"
+    );
 
     // Verify files were copied
     assert!(root_path.join("file1.txt").exists());
@@ -206,9 +209,8 @@ async fn test_daemon_sync_incremental() {
     let socket_str = socket_path.to_string_lossy().to_string();
     let root = root_path.clone();
 
-    let daemon_handle = tokio::spawn(async move {
-        sy::server::daemon::run_daemon(&socket_str, &root).await
-    });
+    let daemon_handle =
+        tokio::spawn(async move { sy::server::daemon::run_daemon(&socket_str, &root).await });
 
     // Give daemon time to start
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -257,15 +259,18 @@ async fn test_daemon_sync_pull() {
     fs::create_dir_all(daemon_root.join("subdir")).unwrap();
     fs::write(daemon_root.join("remote1.txt"), "remote content 1").unwrap();
     fs::write(daemon_root.join("remote2.txt"), "remote content 2").unwrap();
-    fs::write(daemon_root.join("subdir/remote_nested.txt"), "nested remote").unwrap();
+    fs::write(
+        daemon_root.join("subdir/remote_nested.txt"),
+        "nested remote",
+    )
+    .unwrap();
 
     // Start daemon in background
     let socket_str = socket_path.to_string_lossy().to_string();
     let root = daemon_root.clone();
 
-    let daemon_handle = tokio::spawn(async move {
-        sy::server::daemon::run_daemon(&socket_str, &root).await
-    });
+    let daemon_handle =
+        tokio::spawn(async move { sy::server::daemon::run_daemon(&socket_str, &root).await });
 
     // Give daemon time to start
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -279,7 +284,11 @@ async fn test_daemon_sync_pull() {
     )
     .await;
 
-    assert!(sync_result.is_ok(), "Pull sync should succeed: {:?}", sync_result);
+    assert!(
+        sync_result.is_ok(),
+        "Pull sync should succeed: {:?}",
+        sync_result
+    );
 
     let stats = sync_result.unwrap();
     assert_eq!(stats.files_created, 3, "Should pull 3 files");

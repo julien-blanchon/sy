@@ -12,6 +12,7 @@ use crate::server::protocol::{
     DELTA_MIN_SIZE,
 };
 use crate::ssh::config::SshConfig;
+use crate::sync::live_progress::ProgressState;
 use crate::sync::scanner::{self, ScanOptions};
 use crate::sync::{
     ChangeAction, DirectoryChange, DryRunDetails, FileChange, SymlinkChange, SyncStats,
@@ -37,7 +38,12 @@ struct SourceEntry {
 }
 
 /// Sync from local source to remote destination using server protocol
-pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> Result<SyncStats> {
+pub async fn sync_server_mode(
+    source: &Path,
+    dest: &SyncPath,
+    dry_run: bool,
+    progress: Option<Arc<ProgressState>>,
+) -> Result<SyncStats> {
     let start = Instant::now();
 
     // Connect to server
@@ -183,6 +189,14 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
         })
         .collect();
 
+    // Initialize progress tracking if provided
+    if let Some(ref progress) = progress {
+        let total_bytes: u64 = creates.iter().map(|(_, e)| e.size).sum::<u64>()
+            + updates.iter().map(|(_, e)| e.size).sum::<u64>();
+        let total_transfers = creates.len() + updates.len();
+        progress.set_totals(total_bytes, total_transfers);
+    }
+
     // Step 3a: Handle CREATES with full file transfer (+ compression)
     if !creates.is_empty() {
         if dry_run {
@@ -238,8 +252,19 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
             })
             .await?;
 
-            // Send all creates
+            // Send all creates - track progress for each file
+            // We need to map idx back to original entry for progress tracking
+            let idx_to_entry: HashMap<u32, &SourceEntry> =
+                creates.iter().map(|(idx, e)| (*idx, *e)).collect();
+
             for (idx, data, flags) in &files_data {
+                // Start transfer progress
+                if let Some(ref progress) = progress {
+                    if let Some(entry) = idx_to_entry.get(idx) {
+                        progress.start_transfer(PathBuf::from(&entry.rel_path));
+                    }
+                }
+
                 bytes_transferred += data.len() as u64;
                 session
                     .send_file_data_with_flags(*idx, 0, *flags, data.clone())
@@ -248,12 +273,18 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
             session.flush().await?;
 
             // Read confirmations
-            for _ in &files_data {
+            for (idx, _, _) in &files_data {
                 let done = session.read_file_done().await?;
                 if done.status != 0 {
                     tracing::error!("Create failed: index {} status {}", done.index, done.status);
                 } else {
                     files_created += 1;
+                    // Finish transfer progress
+                    if let Some(ref progress) = progress {
+                        if let Some(entry) = idx_to_entry.get(idx) {
+                            progress.finish_transfer(&PathBuf::from(&entry.rel_path), entry.size);
+                        }
+                    }
                 }
             }
         }
@@ -317,7 +348,7 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
                     if pending.len() >= PIPELINE_DEPTH {
                         session.flush().await?;
                         let (updated, transferred) =
-                            process_delta_batch(&mut session, &pending).await?;
+                            process_delta_batch(&mut session, &pending, progress.as_ref()).await?;
                         files_updated += updated;
                         bytes_transferred += transferred;
                         pending.clear();
@@ -328,7 +359,7 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
                 if !pending.is_empty() {
                     session.flush().await?;
                     let (updated, transferred) =
-                        process_delta_batch(&mut session, &pending).await?;
+                        process_delta_batch(&mut session, &pending, progress.as_ref()).await?;
                     files_updated += updated;
                     bytes_transferred += transferred;
                 }
@@ -370,7 +401,18 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
                 })
                 .await?;
 
+                // Map idx to entry for progress tracking
+                let idx_to_entry: HashMap<u32, &SourceEntry> =
+                    full_updates.iter().map(|(idx, e)| (*idx, *e)).collect();
+
                 for (idx, data, flags) in &files_data {
+                    // Start transfer progress
+                    if let Some(ref progress) = progress {
+                        if let Some(entry) = idx_to_entry.get(idx) {
+                            progress.start_transfer(PathBuf::from(&entry.rel_path));
+                        }
+                    }
+
                     bytes_transferred += data.len() as u64;
                     session
                         .send_file_data_with_flags(*idx, 0, *flags, data.clone())
@@ -378,7 +420,7 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
                 }
                 session.flush().await?;
 
-                for _ in &files_data {
+                for (idx, _, _) in &files_data {
                     let done = session.read_file_done().await?;
                     if done.status != 0 {
                         tracing::error!(
@@ -388,6 +430,13 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
                         );
                     } else {
                         files_updated += 1;
+                        // Finish transfer progress
+                        if let Some(ref progress) = progress {
+                            if let Some(entry) = idx_to_entry.get(idx) {
+                                progress
+                                    .finish_transfer(&PathBuf::from(&entry.rel_path), entry.size);
+                            }
+                        }
                     }
                 }
             }
@@ -446,6 +495,11 @@ pub async fn sync_server_mode(source: &Path, dest: &SyncPath, dry_run: bool) -> 
         symlinks_created,
         duration
     );
+
+    // Mark progress as finished
+    if let Some(ref progress) = progress {
+        progress.mark_finished();
+    }
 
     // Build detailed dry-run info if in dry-run mode
     let dry_run_details = if dry_run {
@@ -562,6 +616,7 @@ pub async fn sync_pull_server_mode(
     source: &SyncPath,
     dest: &Path,
     dry_run: bool,
+    progress: Option<Arc<ProgressState>>,
 ) -> Result<SyncStats> {
     let start = Instant::now();
 
@@ -592,7 +647,7 @@ pub async fn sync_pull_server_mode(
     // Detailed dry-run tracking
     let mut file_changes: Vec<FileChange> = Vec::new();
     let mut dir_changes: Vec<DirectoryChange> = Vec::new();
-    let mut symlink_changes: Vec<SymlinkChange> = Vec::new();
+    let symlink_changes: Vec<SymlinkChange> = Vec::new();
 
     // Step 1: Receive and create directories
     let mkdir_batch = session.read_mkdir_batch().await?;
@@ -639,7 +694,7 @@ pub async fn sync_pull_server_mode(
 
     // Track what WOULD happen in dry-run using metadata (before making decisions)
     if dry_run {
-        for (idx, entry) in file_list.entries.iter().enumerate() {
+        for entry in file_list.entries.iter() {
             let action = if let Some((local_size, local_mtime)) = local_map.get(&entry.path) {
                 if *local_size == entry.size && *local_mtime >= entry.mtime {
                     ChangeAction::Skip
@@ -733,10 +788,26 @@ pub async fn sync_pull_server_mode(
             files_to_receive.len(),
             files_skipped
         );
+
+        // Initialize progress tracking if provided
+        if let Some(ref progress) = progress {
+            // Calculate total bytes from files to receive
+            let total_bytes: u64 = files_to_receive
+                .iter()
+                .filter_map(|(idx, _)| file_list.entries.get(*idx as usize))
+                .map(|e| e.size)
+                .sum();
+            progress.set_totals(total_bytes, files_to_receive.len());
+        }
+
         session.send_file_list_ack(decisions).await?;
 
         // Step 3: Receive files (only in non-dry-run mode)
         for (idx, rel_path) in &files_to_receive {
+            // Start transfer progress
+            if let Some(ref progress) = progress {
+                progress.start_transfer(PathBuf::from(rel_path));
+            }
             let file_data = match session.read_file_data().await? {
                 Some(data) => data,
                 None => break, // Server sent symlinks instead
@@ -750,13 +821,18 @@ pub async fn sync_pull_server_mode(
             }
 
             // Write file
+            let file_size = file_data.data.len() as u64;
             match std::fs::write(&full_path, &file_data.data) {
                 Ok(_) => {
-                    bytes_transferred += file_data.data.len() as u64;
+                    bytes_transferred += file_size;
                     if local_map.contains_key(rel_path) {
                         files_updated += 1;
                     } else {
                         files_created += 1;
+                    }
+                    // Finish transfer progress
+                    if let Some(ref progress) = progress {
+                        progress.finish_transfer(&PathBuf::from(rel_path), file_size);
                     }
                     session.send_file_done(*idx, 0).await?;
                 }
@@ -824,6 +900,11 @@ pub async fn sync_pull_server_mode(
         bytes_transferred,
         duration
     );
+
+    // Mark progress as finished
+    if let Some(ref progress) = progress {
+        progress.mark_finished();
+    }
 
     // Build detailed dry-run info if in dry-run mode
     let dry_run_details = if dry_run {
@@ -945,6 +1026,7 @@ async fn scan_local_dest(dest: &Path) -> Result<Vec<SourceEntry>> {
 async fn process_delta_batch(
     session: &mut ServerSession,
     pending: &[(u32, &SourceEntry, u32)],
+    progress: Option<&Arc<ProgressState>>,
 ) -> Result<(u64, u64)> {
     use crate::server::protocol::ChecksumResp;
 
@@ -1025,6 +1107,11 @@ async fn process_delta_batch(
         let (idx, ops, delta_bytes) = result?;
         let entry = pending[i].1;
 
+        // Start transfer progress
+        if let Some(progress) = progress {
+            progress.start_transfer(PathBuf::from(&entry.rel_path));
+        }
+
         bytes_transferred += delta_bytes;
         sent_indices.push((idx, entry.rel_path.clone(), delta_bytes, entry.size));
 
@@ -1045,6 +1132,10 @@ async fn process_delta_batch(
             );
         } else {
             files_updated += 1;
+            // Finish transfer progress
+            if let Some(progress) = progress {
+                progress.finish_transfer(&PathBuf::from(&rel_path), size);
+            }
             tracing::debug!(
                 "Delta sync {}: sent {}KB (file is {}KB)",
                 rel_path,

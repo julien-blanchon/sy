@@ -209,6 +209,7 @@ pub async fn list_directory<T: Transport>(
 }
 
 /// Filter entries to only include direct children (non-recursive listing)
+#[allow(dead_code)]
 fn filter_direct_children(entries: Vec<FileEntry>, _base_path: &Path) -> Vec<FileEntry> {
     entries
         .into_iter()

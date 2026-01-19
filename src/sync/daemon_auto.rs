@@ -296,8 +296,6 @@ pub async fn cleanup_daemon_connection(control_path: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_safe_host_name() {
         let host = "user@host.com:22";

@@ -72,6 +72,8 @@ from sypy._sypy import (
     GcsConfig,
     # List classes
     ListEntry,
+    # Progress classes
+    ProgressSnapshot,
     S3Config,
     SshConfig,
     SymlinkChange,
@@ -110,6 +112,8 @@ __all__ = [
     # List classes
     "ListEntry",
     "ListEntryDict",
+    # Progress classes
+    "ProgressSnapshot",
     "S3Config",
     "SshConfig",
     "SymlinkChange",

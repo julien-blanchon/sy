@@ -4,6 +4,7 @@ pub mod daemon_auto;
 #[cfg(unix)]
 pub mod daemon_mode;
 pub mod dircache;
+pub mod live_progress;
 pub mod output;
 pub mod progress;
 pub mod ratelimit;
@@ -45,6 +46,7 @@ pub struct SyncError {
 }
 
 /// Detailed information about a file change in dry-run mode
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FileChange {
     pub path: PathBuf,
@@ -57,6 +59,7 @@ pub struct FileChange {
 }
 
 /// Detailed information about a directory change in dry-run mode
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct DirectoryChange {
     pub path: PathBuf,
@@ -64,6 +67,7 @@ pub struct DirectoryChange {
 }
 
 /// Detailed information about a symlink change in dry-run mode
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SymlinkChange {
     pub path: PathBuf,
@@ -81,6 +85,7 @@ pub enum ChangeAction {
 }
 
 /// Comprehensive dry-run details with file-level information
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct DryRunDetails {
     pub file_changes: Vec<FileChange>,
@@ -172,6 +177,8 @@ pub struct SyncEngine<T: Transport> {
     prune_checksum_db: bool,
     dest_is_remote: bool,
     perf_monitor: Option<Arc<Mutex<PerformanceMonitor>>>,
+    /// Optional live progress state for real-time progress reporting
+    live_progress: Option<Arc<live_progress::ProgressState>>,
 }
 
 impl<T: Transport + 'static> SyncEngine<T> {
@@ -261,7 +268,24 @@ impl<T: Transport + 'static> SyncEngine<T> {
             prune_checksum_db,
             dest_is_remote,
             perf_monitor,
+            live_progress: None,
         }
+    }
+
+    /// Set the live progress state for real-time progress reporting
+    ///
+    /// When set, the sync engine will update this state during sync operations,
+    /// allowing external code to sample it for progress bars, logging, etc.
+    #[allow(dead_code)]
+    pub fn with_live_progress(mut self, progress: Arc<live_progress::ProgressState>) -> Self {
+        self.live_progress = Some(progress);
+        self
+    }
+
+    /// Get the live progress state (if set)
+    #[allow(dead_code)]
+    pub fn live_progress(&self) -> Option<Arc<live_progress::ProgressState>> {
+        self.live_progress.clone()
     }
 
     fn should_filter_by_size(&self, file_size: u64) -> bool {
@@ -885,6 +909,18 @@ impl<T: Transport + 'static> SyncEngine<T> {
             })
             .sum();
 
+        // Count total transfers (non-skip, non-delete tasks with source files)
+        let total_transfers = tasks
+            .iter()
+            .filter(|t| !matches!(t.action, SyncAction::Skip | SyncAction::Delete))
+            .filter(|t| t.source.as_ref().map(|s| !s.is_dir).unwrap_or(false))
+            .count();
+
+        // Initialize live progress state if set
+        if let Some(ref progress) = self.live_progress {
+            progress.set_totals(total_bytes, total_transfers);
+        }
+
         // Create progress bar (only if not quiet)
         let pb = if self.quiet {
             ProgressBar::hidden()
@@ -961,14 +997,26 @@ impl<T: Transport + 'static> SyncEngine<T> {
             let per_file_progress = self.per_file_progress && !self.quiet;
             let hardlink_map = Arc::clone(&hardlink_map);
             let _perf_monitor = self.perf_monitor.clone();
-            let file_changes_tracker = Arc::clone(&dry_run_file_changes);
-            let dir_changes_tracker = Arc::clone(&dry_run_dir_changes);
-            let symlink_changes_tracker = Arc::clone(&dry_run_symlink_changes);
+            let _file_changes_tracker = Arc::clone(&dry_run_file_changes);
+            let _dir_changes_tracker = Arc::clone(&dry_run_dir_changes);
+            let _symlink_changes_tracker = Arc::clone(&dry_run_symlink_changes);
+            let live_progress = self.live_progress.clone();
 
             // Clone stats for error reporting inside the task (if needed)
             // But we mainly return results to the main loop
 
             async move {
+                // Mark transfer as started for live progress
+                let transfer_path = task.dest_path.clone();
+                let file_size = task.source.as_ref().map(|s| s.size).unwrap_or(0);
+                let is_file_transfer = task.source.as_ref().map(|s| !s.is_dir).unwrap_or(false)
+                    && matches!(task.action, SyncAction::Create | SyncAction::Update);
+
+                if is_file_transfer {
+                    if let Some(ref progress) = live_progress {
+                        progress.start_transfer(transfer_path.clone());
+                    }
+                }
                 let transferrer = Transferrer::new(
                     transport.as_ref(),
                     dry_run,
@@ -1192,6 +1240,13 @@ impl<T: Transport + 'static> SyncEngine<T> {
                     _ => 0,
                 };
                 pb.inc(bytes_for_progress);
+
+                // Update live progress when transfer completes
+                if is_file_transfer {
+                    if let Some(ref progress) = live_progress {
+                        progress.finish_transfer(&transfer_path, file_size);
+                    }
+                }
 
                 result
             }
@@ -1532,6 +1587,11 @@ impl<T: Transport + 'static> SyncEngine<T> {
         }
 
         pb.finish_with_message("Sync complete");
+
+        // Mark live progress as finished
+        if let Some(ref progress) = self.live_progress {
+            progress.mark_finished();
+        }
 
         // Extract final stats before reporting errors
         let mut final_stats = Arc::try_unwrap(stats).unwrap().into_inner().unwrap();

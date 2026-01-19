@@ -8,9 +8,10 @@ pub fn anyhow_to_pyerr(err: anyhow::Error) -> PyErr {
     // Check for specific error types and convert accordingly
     let msg = err.to_string();
 
-    if msg.contains("not found") || msg.contains("No such file") {
-        PyIOError::new_err(msg)
-    } else if msg.contains("Permission denied") {
+    if msg.contains("not found")
+        || msg.contains("No such file")
+        || msg.contains("Permission denied")
+    {
         PyIOError::new_err(msg)
     } else if msg.contains("Invalid") {
         PyValueError::new_err(msg)
