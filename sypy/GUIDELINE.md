@@ -7,6 +7,7 @@ Comprehensive guide for using sypy in various scenarios.
 - [Installation](#installation)
 - [Quick Reference](#quick-reference)
 - [Local Sync](#local-sync)
+- [Copy Operations (rclone copy style)](#copy-operations-rclone-copy-style)
 - [SSH Remote Sync](#ssh-remote-sync)
 - [Daemon Mode (Fast Repeated Syncs)](#daemon-mode-fast-repeated-syncs)
 - [S3 Sync](#s3-sync)
@@ -57,6 +58,10 @@ import sypy
 
 # Local sync
 sypy.sync("/source/", "/dest/")
+
+# Copy operations (rclone copy style)
+sypy.sync("/local/", "s3://bucket/", ignore_existing=True)  # Skip existing files
+sypy.sync("/local/", "s3://bucket/", update=True)           # Update if newer
 
 # SSH sync
 sypy.sync("/local/", "user@host:/remote/")
@@ -143,6 +148,202 @@ stats = sypy.sync(
     gitignore=True,    # Apply .gitignore rules
     exclude_vcs=True,  # Also exclude .git, .svn, etc.
 )
+```
+
+---
+
+## Copy Operations (rclone copy style)
+
+### Understanding Sync vs Copy
+
+`sy` is fundamentally a **synchronization tool** (like `rsync`), but it can be used for **copy operations** (like `rclone copy`):
+
+| Tool | Default Behavior |
+|------|------------------|
+| `rclone copy` | Copy new files only, skip existing files |
+| `sy` (default) | Copy new files + update changed files (size/mtime differ) |
+| `sy --ignore-existing` | Copy new files only (exact `rclone copy` behavior) |
+
+### Basic Copy (sy default)
+
+```python
+import sypy
+
+# Upload: copies new + updates changed files
+stats = sypy.sync("/local/", "s3://bucket/path/")
+
+# Download: same behavior
+stats = sypy.sync("s3://bucket/path/", "/local/")
+
+print(f"Created: {stats.files_created}, Updated: {stats.files_updated}")
+```
+
+**Default behavior:**
+- ✅ Copies new files
+- ✅ Updates files where size or mtime differs
+- ❌ Never deletes files (unless `delete=True`)
+
+### Exact rclone copy Behavior
+
+To replicate `rclone copy` exactly (skip all existing files):
+
+```python
+# Skip existing files, even if they're different
+stats = sypy.sync("/local/", "s3://bucket/path/", ignore_existing=True)
+
+# Only new files are copied
+print(f"Copied {stats.files_created} new files")
+print(f"Skipped {stats.files_skipped} existing files")
+```
+
+### Smart Copy (update only if newer)
+
+```python
+# Update files only if source is newer
+stats = sypy.sync("/local/", "s3://bucket/path/", update=True)
+```
+
+**Behavior:**
+- ✅ Copies new files
+- ✅ Updates files where source is newer
+- ⏭️ Skips files where destination is newer or same age
+
+### Comparison Modes
+
+```python
+# Default: compare by size + mtime (fast)
+sypy.sync("/source/", "/dest/")
+
+# Force copy all files (ignore mtime)
+sypy.sync("/source/", "/dest/", ignore_times=True)
+
+# Compare by size only (fastest)
+sypy.sync("/source/", "/dest/", size_only=True)
+
+# Compare by checksum (slowest but most accurate)
+sypy.sync("/source/", "/dest/", checksum=True)
+```
+
+### Copy Use Cases
+
+#### Simple Upload (S3)
+
+```python
+import sypy
+
+# Like: rclone copy /local s3://bucket
+s3 = sypy.S3Config(
+    access_key_id="...",
+    secret_access_key="...",
+    region="us-east-1",
+)
+
+stats = sypy.sync("/local/data/", "s3://my-bucket/data/", s3=s3)
+print(f"Uploaded {stats.files_created} new files")
+print(f"Updated {stats.files_updated} changed files")
+```
+
+#### Simple Download (S3)
+
+```python
+# Like: rclone copy s3://bucket /local
+stats = sypy.sync("s3://my-bucket/data/", "/local/data/", s3=s3)
+```
+
+#### Skip Existing Files (exact rclone copy)
+
+```python
+# Like: rclone copy --ignore-existing
+stats = sypy.sync(
+    "/local/data/",
+    "s3://my-bucket/data/",
+    s3=s3,
+    ignore_existing=True,  # Skip all existing files
+)
+```
+
+#### Copy with Exclusions
+
+```python
+# Like: rclone copy --exclude "*.log"
+stats = sypy.sync(
+    "/local/data/",
+    "s3://my-bucket/data/",
+    s3=s3,
+    exclude=["*.log", "*.tmp", "__pycache__"],
+)
+```
+
+#### Copy Large Dataset (optimized)
+
+```python
+# High-throughput copy for many files
+client_opts = sypy.CloudClientOptions.high_throughput()
+s3 = sypy.S3Config(
+    access_key_id="...",
+    secret_access_key="...",
+    region="us-east-1",
+    client_options=client_opts,
+)
+
+stats = sypy.sync(
+    "/local/data/",
+    "s3://my-bucket/data/",
+    s3=s3,
+    parallel=100,  # Many parallel transfers
+)
+
+print(f"Copied {stats.bytes_transferred / 1024**3:.2f} GB")
+```
+
+#### Copy to Multiple Destinations
+
+```python
+import sypy
+
+def copy_to_backups(source: str, s3_config):
+    """Copy to multiple S3 locations."""
+    destinations = [
+        "s3://primary-backup/data/",
+        "s3://secondary-backup/data/",
+        "s3://archive-backup/data/",
+    ]
+    
+    for dest in destinations:
+        stats = sypy.sync(source, dest, s3=s3_config, ignore_existing=True)
+        print(f"{dest}: copied {stats.files_created} files")
+
+# Usage
+s3 = sypy.S3Config(access_key_id="...", secret_access_key="...", region="us-east-1")
+copy_to_backups("/local/important/", s3)
+```
+
+### Copy vs Sync Decision Guide
+
+| Goal | Use |
+|------|-----|
+| One-way copy, skip existing | `ignore_existing=True` |
+| One-way copy, update changed | Default (no flags) |
+| One-way copy, update if newer | `update=True` |
+| Mirror (copy + delete extra) | `delete=True` |
+| Two-way sync with conflict resolution | `bidirectional=True` |
+
+### Command Line Equivalents
+
+For reference, here are the CLI equivalents:
+
+```bash
+# Default (copy + update changed)
+sy /local/ s3://bucket/path/
+
+# Skip existing (exact rclone copy)
+sy /local/ s3://bucket/path/ --ignore-existing
+
+# Update only if newer
+sy /local/ s3://bucket/path/ --update
+
+# Mirror (copy + delete extra)
+sy /local/ s3://bucket/path/ --delete
 ```
 
 ---
