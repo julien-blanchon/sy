@@ -1,5 +1,6 @@
 //! Python wrapper for SyncStats and SyncError
 
+use crate::dryrun::PyDryRunDetails;
 use pyo3::prelude::*;
 
 /// Error information from a sync operation
@@ -101,6 +102,9 @@ pub struct PySyncStats {
     pub symlinks_created: u64,
     /// List of errors encountered
     errors: Vec<PySyncError>,
+
+    /// Detailed dry-run information (only present when dry_run=True)
+    dry_run_details_data: Option<PyDryRunDetails>,
 }
 
 #[pymethods]
@@ -125,6 +129,52 @@ impl PySyncStats {
         } else {
             0.0
         }
+    }
+
+    /// Get a clean, typed summary for dry-run results
+    /// Returns a dict with 'would_create', 'would_update', 'would_delete' keys
+    #[getter]
+    pub fn dry_run_summary(&self, py: Python<'_>) -> PyResult<PyObject> {
+        use pyo3::types::PyDict;
+
+        let dict = PyDict::new_bound(py);
+
+        // would_create
+        let create = PyDict::new_bound(py);
+        create.set_item("count", self.files_created)?;
+        create.set_item("bytes", self.bytes_would_add)?;
+        dict.set_item("would_create", create)?;
+
+        // would_update
+        let update = PyDict::new_bound(py);
+        update.set_item("count", self.files_updated)?;
+        update.set_item("bytes", self.bytes_would_change)?;
+        dict.set_item("would_update", update)?;
+
+        // would_delete
+        let delete = PyDict::new_bound(py);
+        delete.set_item("count", self.files_deleted)?;
+        delete.set_item("bytes", self.bytes_would_delete)?;
+        dict.set_item("would_delete", delete)?;
+
+        // totals
+        dict.set_item(
+            "total_files",
+            self.files_created + self.files_updated + self.files_deleted as u64,
+        )?;
+        dict.set_item(
+            "total_bytes",
+            self.bytes_would_add + self.bytes_would_change + self.bytes_would_delete,
+        )?;
+
+        Ok(dict.into())
+    }
+
+    /// Get detailed dry-run information with file-level changes
+    /// Returns None if not a dry-run, otherwise returns DryRunDetails object
+    #[getter]
+    pub fn dry_run_details(&self) -> Option<PyDryRunDetails> {
+        self.dry_run_details_data.clone()
     }
 
     fn __str__(&self) -> String {
@@ -167,6 +217,7 @@ impl From<sy::sync::SyncStats> for PySyncStats {
             dirs_created: stats.dirs_created,
             symlinks_created: stats.symlinks_created,
             errors: stats.errors.iter().map(PySyncError::from).collect(),
+            dry_run_details_data: stats.dry_run_details.as_ref().map(PyDryRunDetails::from),
         }
     }
 }

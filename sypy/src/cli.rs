@@ -326,12 +326,15 @@ pub fn main(py: Python<'_>, args: Option<Vec<String>>) -> PyResult<i32> {
         let source = &positional[0];
         let dest = &positional[1];
 
+        // Parse dry_run flag
+        let dry_run = args.iter().any(|arg| arg == "--dry-run" || arg == "-n");
+
         // Use the sync function with all default values
         let result = crate::sync::sync(
             py,
             source,
             dest,
-            false,  // dry_run
+            dry_run,
             false,  // delete
             50,     // delete_threshold
             10,     // parallel
@@ -362,6 +365,22 @@ pub fn main(py: Python<'_>, args: Option<Vec<String>>) -> PyResult<i32> {
             None,   // gcs
             None,   // ssh
         )?;
+
+        // Format output for dry-run
+        if dry_run && result.success() {
+            println!("\n✓ Dry-run complete (no changes made)\n");
+            println!("  Would create:  {} files", result.files_created);
+            println!("  Would update:  {} files", result.files_updated);
+            if result.bytes_would_add > 0 || result.bytes_would_change > 0 {
+                println!();
+                if result.bytes_would_add > 0 {
+                    println!("  Data to add:     {} bytes", result.bytes_would_add);
+                }
+                if result.bytes_would_change > 0 {
+                    println!("  Data to change:  {} bytes", result.bytes_would_change);
+                }
+            }
+        }
 
         if result.success() {
             Ok(0)

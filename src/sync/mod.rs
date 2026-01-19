@@ -44,6 +44,53 @@ pub struct SyncError {
     pub action: String,
 }
 
+/// Detailed information about a file change in dry-run mode
+#[derive(Debug, Clone)]
+pub struct FileChange {
+    pub path: PathBuf,
+    pub action: ChangeAction,
+    pub size: u64,
+    pub transfer_bytes: u64, // Actual bytes to transfer (different for delta/compression)
+    pub would_use_delta: bool,
+    pub would_compress: bool,
+    pub skip_reason: Option<String>,
+}
+
+/// Detailed information about a directory change in dry-run mode
+#[derive(Debug, Clone)]
+pub struct DirectoryChange {
+    pub path: PathBuf,
+    pub action: ChangeAction,
+}
+
+/// Detailed information about a symlink change in dry-run mode
+#[derive(Debug, Clone)]
+pub struct SymlinkChange {
+    pub path: PathBuf,
+    pub action: ChangeAction,
+    pub target: String,
+}
+
+/// Action type for changes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeAction {
+    Create,
+    Update,
+    Delete,
+    Skip,
+}
+
+/// Comprehensive dry-run details with file-level information
+#[derive(Debug, Clone, Default)]
+pub struct DryRunDetails {
+    pub file_changes: Vec<FileChange>,
+    pub directory_changes: Vec<DirectoryChange>,
+    pub symlink_changes: Vec<SymlinkChange>,
+    pub filtered_files: Vec<PathBuf>,
+    pub estimated_duration_secs: f64,
+    pub estimated_network_bytes: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SyncStats {
     pub files_scanned: u64,
@@ -70,6 +117,8 @@ pub struct SyncStats {
     pub symlinks_created: u64,
     // Error tracking
     pub errors: Vec<SyncError>,
+    // Detailed dry-run information
+    pub dry_run_details: Option<DryRunDetails>,
 }
 
 #[derive(Debug)]
@@ -814,7 +863,15 @@ impl<T: Transport + 'static> SyncEngine<T> {
             dirs_created: 0,
             symlinks_created: 0,
             errors: Vec::new(),
+            dry_run_details: None,
         }));
+
+        // Detailed dry-run tracking (thread-safe)
+        let dry_run_file_changes: Arc<Mutex<Vec<FileChange>>> = Arc::new(Mutex::new(Vec::new()));
+        let dry_run_dir_changes: Arc<Mutex<Vec<DirectoryChange>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let dry_run_symlink_changes: Arc<Mutex<Vec<SymlinkChange>>> =
+            Arc::new(Mutex::new(Vec::new()));
 
         // Calculate total bytes to transfer (for accurate progress/ETA)
         let total_bytes: u64 = tasks
@@ -904,6 +961,9 @@ impl<T: Transport + 'static> SyncEngine<T> {
             let per_file_progress = self.per_file_progress && !self.quiet;
             let hardlink_map = Arc::clone(&hardlink_map);
             let _perf_monitor = self.perf_monitor.clone();
+            let file_changes_tracker = Arc::clone(&dry_run_file_changes);
+            let dir_changes_tracker = Arc::clone(&dry_run_dir_changes);
+            let symlink_changes_tracker = Arc::clone(&dry_run_symlink_changes);
 
             // Clone stats for error reporting inside the task (if needed)
             // But we mainly return results to the main loop
@@ -1157,6 +1217,31 @@ impl<T: Transport + 'static> SyncEngine<T> {
                                 if let Some(src) = &task.source {
                                     if !src.is_dir {
                                         s.bytes_would_add += src.size;
+                                        // Track detailed change
+                                        if let Ok(mut changes) = dry_run_file_changes.lock() {
+                                            changes.push(FileChange {
+                                                path: task.dest_path.clone(),
+                                                action: ChangeAction::Create,
+                                                size: src.size,
+                                                transfer_bytes: res.bytes_written,
+                                                would_use_delta: res
+                                                    .transfer_result
+                                                    .as_ref()
+                                                    .map(|tr| tr.used_delta())
+                                                    .unwrap_or(false),
+                                                would_compress: res
+                                                    .transfer_result
+                                                    .as_ref()
+                                                    .map(|tr| tr.compression_used)
+                                                    .unwrap_or(false),
+                                                skip_reason: None,
+                                            });
+                                        }
+                                    } else if let Ok(mut changes) = dry_run_dir_changes.lock() {
+                                        changes.push(DirectoryChange {
+                                            path: task.dest_path.clone(),
+                                            action: ChangeAction::Create,
+                                        });
                                     }
                                 }
                             }
@@ -1203,6 +1288,26 @@ impl<T: Transport + 'static> SyncEngine<T> {
                                 if let Some(src) = &task.source {
                                     if !src.is_dir {
                                         s.bytes_would_change += src.size;
+                                        // Track detailed change
+                                        if let Ok(mut changes) = dry_run_file_changes.lock() {
+                                            changes.push(FileChange {
+                                                path: task.dest_path.clone(),
+                                                action: ChangeAction::Update,
+                                                size: src.size,
+                                                transfer_bytes: res.bytes_written,
+                                                would_use_delta: res
+                                                    .transfer_result
+                                                    .as_ref()
+                                                    .map(|tr| tr.used_delta())
+                                                    .unwrap_or(false),
+                                                would_compress: res
+                                                    .transfer_result
+                                                    .as_ref()
+                                                    .map(|tr| tr.compression_used)
+                                                    .unwrap_or(false),
+                                                skip_reason: None,
+                                            });
+                                        }
                                     }
                                 }
                             }
@@ -1255,6 +1360,25 @@ impl<T: Transport + 'static> SyncEngine<T> {
                         }
                         SyncAction::Skip => {
                             s.files_skipped += 1;
+
+                            if self.dry_run {
+                                if let Some(src) = &task.source {
+                                    if !src.is_dir {
+                                        if let Ok(mut changes) = dry_run_file_changes.lock() {
+                                            changes.push(FileChange {
+                                                path: task.dest_path.clone(),
+                                                action: ChangeAction::Skip,
+                                                size: src.size,
+                                                transfer_bytes: 0,
+                                                would_use_delta: false,
+                                                would_compress: false,
+                                                skip_reason: Some("Already up-to-date".to_string()),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
                             if self.json {
                                 SyncEvent::Skip {
                                     path: task.dest_path.clone(),
@@ -1265,10 +1389,34 @@ impl<T: Transport + 'static> SyncEngine<T> {
                         }
                         SyncAction::Delete => {
                             s.files_deleted += 1;
-                            if self.dry_run && !task.dest_path.is_dir() {
-                                // Note: we don't have metadata here unless we checked it earlier
-                                // Simplified: we might miss bytes_would_delete accuracy in this refactor
-                                // unless we passed it in TaskResult, but Delete action doesn't return TaskResult with size
+
+                            if self.dry_run {
+                                let is_dir = task.dest_path.is_dir();
+                                if !is_dir {
+                                    // Track file deletion
+                                    if let Ok(mut changes) = dry_run_file_changes.lock() {
+                                        let size = task
+                                            .dest_path
+                                            .metadata()
+                                            .ok()
+                                            .map(|m| m.len())
+                                            .unwrap_or(0);
+                                        changes.push(FileChange {
+                                            path: task.dest_path.clone(),
+                                            action: ChangeAction::Delete,
+                                            size,
+                                            transfer_bytes: 0,
+                                            would_use_delta: false,
+                                            would_compress: false,
+                                            skip_reason: None,
+                                        });
+                                    }
+                                } else if let Ok(mut changes) = dry_run_dir_changes.lock() {
+                                    changes.push(DirectoryChange {
+                                        path: task.dest_path.clone(),
+                                        action: ChangeAction::Delete,
+                                    });
+                                }
                             }
 
                             if let Some(monitor) = &self.perf_monitor {
@@ -1421,6 +1569,33 @@ impl<T: Transport + 'static> SyncEngine<T> {
 
         // Add duration after extracting stats
         final_stats.duration = start_time.elapsed();
+
+        // Build detailed dry-run info if in dry-run mode
+        if self.dry_run {
+            let file_changes = dry_run_file_changes.lock().unwrap().clone();
+            let directory_changes = dry_run_dir_changes.lock().unwrap().clone();
+            let symlink_changes = dry_run_symlink_changes.lock().unwrap().clone();
+
+            // Calculate estimates
+            let estimated_network_bytes: u64 =
+                file_changes.iter().map(|fc| fc.transfer_bytes).sum();
+
+            let avg_speed_bytes_per_sec = 10 * 1024 * 1024; // 10 MB/s
+            let estimated_duration_secs = if estimated_network_bytes > 0 {
+                (estimated_network_bytes as f64 / avg_speed_bytes_per_sec as f64).max(0.1)
+            } else {
+                0.0
+            };
+
+            final_stats.dry_run_details = Some(DryRunDetails {
+                file_changes,
+                directory_changes,
+                symlink_changes,
+                filtered_files: Vec::new(), // TODO: Track filtered files
+                estimated_duration_secs,
+                estimated_network_bytes,
+            });
+        }
 
         tracing::info!(
             "Sync complete: {} created, {} updated, {} skipped, {} deleted, took {:.2}s",
@@ -1635,6 +1810,7 @@ impl<T: Transport + 'static> SyncEngine<T> {
             dirs_created: 0,
             symlinks_created: 0,
             errors: Vec::new(),
+            dry_run_details: None,
         }));
 
         // Strategy Planner
@@ -2252,6 +2428,7 @@ impl<T: Transport + 'static> SyncEngine<T> {
         let mut stats = SyncStats {
             files_scanned: 1,
             files_created: 0,
+            dry_run_details: None,
             files_updated: 0,
             files_skipped: 0,
             files_deleted: 0,

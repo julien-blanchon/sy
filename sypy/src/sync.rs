@@ -379,7 +379,7 @@ async fn do_sync(
     // Handle server mode for SSH syncs
     if source.is_local() && dest.is_remote() {
         // Local -> Remote: use server mode (push)
-        let stats = sy::sync::server_mode::sync_server_mode(source.path(), &dest)
+        let stats = sy::sync::server_mode::sync_server_mode(source.path(), &dest, dry_run)
             .await
             .map_err(anyhow_to_pyerr)?;
         return Ok(PySyncStats::from(stats));
@@ -387,7 +387,7 @@ async fn do_sync(
 
     if source.is_remote() && dest.is_local() {
         // Remote -> Local: use server mode (pull)
-        let stats = sy::sync::server_mode::sync_pull_server_mode(&source, dest.path())
+        let stats = sy::sync::server_mode::sync_pull_server_mode(&source, dest.path(), dry_run)
             .await
             .map_err(anyhow_to_pyerr)?;
         return Ok(PySyncStats::from(stats));

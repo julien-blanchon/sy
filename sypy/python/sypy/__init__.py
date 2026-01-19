@@ -32,15 +32,46 @@ Example:
     >>> s3 = sypy.S3Config(..., client_options=options)
     >>> stats = sypy.sync("/local/", "s3://bucket/", s3=s3, parallel=100)
 
+    # Dry-run with typed summary
+    >>> stats = sypy.sync("/source", "/dest", dry_run=True)
+    >>> summary = stats.dry_run_summary
+    >>> print(f"Would create {summary['would_create']['count']} files")
+
 """
 
+from typing import TypedDict
+
+
+class DryRunChange(TypedDict):
+    """Details about changes that would be made"""
+
+    count: int
+    bytes: int
+
+
+class DryRunSummary(TypedDict):
+    """Summary of what would happen in a dry-run"""
+
+    would_create: DryRunChange
+    would_update: DryRunChange
+    would_delete: DryRunChange
+    total_files: int
+    total_bytes: int
+
+
 from sypy._sypy import (
+    # Dry-run classes
+    ChangeAction,
     # Client options
     CloudClientOptions,
+    DirectoryChange,
+    DryRunDetails,
+    FileChange,
     # Config classes
     GcsConfig,
     S3Config,
     SshConfig,
+    SymlinkChange,
     # Classes
     SyncError,
     SyncOptions,
@@ -59,12 +90,21 @@ from sypy._sypy import (
 )
 
 __all__ = [
+    # Dry-run classes
+    "ChangeAction",
     # Client options
     "CloudClientOptions",
+    "DirectoryChange",
+    # TypedDicts
+    "DryRunChange",
+    "DryRunDetails",
+    "DryRunSummary",
+    "FileChange",
     # Config classes
     "GcsConfig",
     "S3Config",
     "SshConfig",
+    "SymlinkChange",
     # Classes
     "SyncError",
     "SyncOptions",

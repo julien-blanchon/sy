@@ -5,6 +5,7 @@
 
 mod cli;
 mod config;
+mod dryrun;
 mod error;
 mod options;
 mod path;
@@ -28,6 +29,13 @@ fn _sypy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<config::PyS3Config>()?;
     m.add_class::<config::PyGcsConfig>()?;
     m.add_class::<config::PySshConfig>()?;
+
+    // Register dry-run classes
+    m.add_class::<dryrun::PyChangeAction>()?;
+    m.add_class::<dryrun::PyFileChange>()?;
+    m.add_class::<dryrun::PyDirectoryChange>()?;
+    m.add_class::<dryrun::PySymlinkChange>()?;
+    m.add_class::<dryrun::PyDryRunDetails>()?;
 
     // Register functions
     m.add_function(wrap_pyfunction!(sync::sync, m)?)?;
