@@ -232,6 +232,92 @@ impl Transport for GcsTransport {
         Ok(entries)
     }
 
+    async fn scan_flat(&self, _path: &Path) -> Result<Vec<FileEntry>> {
+        use object_store::path::Path as ObjectPath;
+
+        let prefix = if self.prefix.is_empty() {
+            None
+        } else {
+            Some(ObjectPath::from(self.prefix.clone()))
+        };
+
+        tracing::debug!(
+            "Starting GCS flat listing with prefix: {:?} (using delimiter)",
+            prefix
+        );
+
+        // Use list_with_delimiter for efficient non-recursive listing
+        let list_result = self
+            .store
+            .list_with_delimiter(prefix.as_ref())
+            .await
+            .map_err(|e| {
+                SyncError::Io(std::io::Error::other(format!(
+                    "Failed to list GCS objects: {}",
+                    e
+                )))
+            })?;
+
+        let mut entries = Vec::new();
+
+        let object_count = list_result.objects.len();
+        let dir_count = list_result.common_prefixes.len();
+
+        // Process regular objects (files at this level)
+        for meta in list_result.objects {
+            let key = meta.location.as_ref();
+            let size = meta.size;
+            let modified = meta.last_modified.into();
+
+            entries.push(FileEntry {
+                path: Arc::new(PathBuf::from(key)),
+                relative_path: Arc::new(self.object_path_to_path(&meta.location)),
+                size,
+                modified,
+                is_dir: false,
+                is_symlink: false,
+                symlink_target: None,
+                is_sparse: false,
+                allocated_size: size,
+                xattrs: None,
+                inode: None,
+                nlink: 1,
+                acls: None,
+                bsd_flags: None,
+            });
+        }
+
+        // Process common prefixes (directories at this level)
+        for prefix_path in list_result.common_prefixes {
+            let key = prefix_path.as_ref();
+
+            entries.push(FileEntry {
+                path: Arc::new(PathBuf::from(key)),
+                relative_path: Arc::new(self.object_path_to_path(&prefix_path)),
+                size: 0,
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                is_dir: true,
+                is_symlink: false,
+                symlink_target: None,
+                is_sparse: false,
+                allocated_size: 0,
+                xattrs: None,
+                inode: None,
+                nlink: 1,
+                acls: None,
+                bsd_flags: None,
+            });
+        }
+
+        tracing::info!(
+            "GCS flat listing complete: {} entries ({} files, {} dirs)",
+            entries.len(),
+            object_count,
+            dir_count
+        );
+        Ok(entries)
+    }
+
     async fn scan_streaming(&self, _path: &Path) -> Result<BoxStream<'static, Result<FileEntry>>> {
         use futures::stream::StreamExt;
 

@@ -159,6 +159,24 @@ impl CloudClientOptions {
         }
     }
 
+    /// Configure for fast listing operations (metadata-only, non-recursive)
+    ///
+    /// Optimized for:
+    /// - Very short timeouts for fast fail (2s connect, 10s request)
+    /// - No retries (listings should be fast or fail)
+    /// - Smaller pool (listing is typically sequential)
+    pub fn fast_list() -> Self {
+        Self {
+            pool_max_idle_per_host: 10,
+            pool_idle_timeout_secs: 30,
+            connect_timeout_secs: 2,
+            request_timeout_secs: 10,
+            max_retries: 0,
+            retry_timeout_secs: 5,
+            allow_http: false,
+        }
+    }
+
     /// Build object_store `ClientOptions` from this configuration
     ///
     /// The `max_connections` parameter allows scaling the pool size based

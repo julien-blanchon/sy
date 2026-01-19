@@ -129,12 +129,30 @@ pub trait Transport: Send + Sync {
         Ok(())
     }
 
-    /// Scan a directory and return all entries
+    /// Scan a directory and return all entries (recursive)
     ///
     /// This recursively scans the directory. Behavior is controlled by scan options:
     /// - By default: respects .gitignore patterns and excludes .git directories
     /// - With archive mode: includes all files including .git
     async fn scan(&self, path: &Path) -> Result<Vec<FileEntry>>;
+
+    /// Scan only direct children (non-recursive, efficient for cloud storage)
+    ///
+    /// For cloud storage (S3, GCS), this uses delimiter='/' to only fetch direct
+    /// children without traversing the entire tree. Much faster for large buckets.
+    ///
+    /// Default implementation falls back to scan() + filtering (inefficient but works).
+    async fn scan_flat(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        // Default: inefficient fallback that scans everything then filters
+        let all_entries = self.scan(path).await?;
+        Ok(all_entries
+            .into_iter()
+            .filter(|e| {
+                // Keep only direct children (1 path component)
+                e.relative_path.components().count() == 1
+            })
+            .collect())
+    }
 
     /// Scan a directory and return a stream of entries
     ///

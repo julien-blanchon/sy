@@ -423,6 +423,50 @@ def sync_with_options(
 ) -> SyncStats: ...
 def parse_path(path: str) -> SyncPath: ...
 
+class ListEntry:
+    path: str
+    """Relative path of the entry."""
+
+    size: int
+    """File size in bytes (0 for directories)."""
+
+    mod_time: str
+    """Modification time in RFC3339 format."""
+
+    is_dir: bool
+    """Whether this is a directory."""
+
+    entry_type: str
+    """Entry type: "file", "directory", or "symlink"."""
+
+    mime_type: str | None
+    """MIME type (inferred from extension)."""
+
+    symlink_target: str | None
+    """Symlink target path (if this is a symlink)."""
+
+    is_sparse: bool | None
+    """Whether this is a sparse file."""
+
+    allocated_size: int | None
+    """Actual allocated size on disk (may differ from size for sparse files)."""
+
+    inode: int | None
+    """Inode number (Unix only)."""
+
+    num_links: int | None
+    """Number of hard links to this file."""
+
+    def to_dict(self) -> dict[str, str | int | bool | None]: ...
+
+def ls(
+    path: str,
+    recursive: bool = False,
+    max_depth: int | None = None,
+    files_only: bool = False,
+    dirs_only: bool = False,
+) -> list[ListEntry]: ...
+
 # CLI functions
 def main(args: list[str] | None = None) -> int: ...
 def run_server(path: str) -> None: ...

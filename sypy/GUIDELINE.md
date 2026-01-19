@@ -14,6 +14,7 @@ Comprehensive guide for using sypy in various scenarios.
 - [GCS Sync](#gcs-sync)
 - [Performance Tuning](#performance-tuning)
 - [Common Patterns](#common-patterns)
+- [Directory Listing (sy.ls)](#directory-listing-syls)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -932,6 +933,234 @@ print(f"Rate: {stats.bytes_transferred / elapsed / 1024 / 1024:.1f} MB/s")
 
 ---
 
+## Directory Listing (sy.ls)
+
+sy provides a fast, unified directory listing API that works across all storage backends.
+
+### Basic Listing
+
+```python
+import sypy
+
+# List local directory (non-recursive)
+entries = sypy.ls("/path/to/directory")
+
+for entry in entries:
+    icon = "📁" if entry.is_dir else "📄"
+    print(f"{icon} {entry.path}: {entry.size} bytes")
+```
+
+### Recursive Listing
+
+```python
+# List all files and subdirectories
+entries = sypy.ls("/path/to/directory", recursive=True)
+
+print(f"Found {len(entries)} total entries")
+
+# Group by type
+files = [e for e in entries if not e.is_dir]
+dirs = [e for e in entries if e.is_dir]
+print(f"Files: {len(files)}, Directories: {len(dirs)}")
+```
+
+### Filters
+
+```python
+# Only files (exclude directories)
+files = sypy.ls("/path", recursive=True, files_only=True)
+
+# Only directories (exclude files)
+dirs = sypy.ls("/path", recursive=True, dirs_only=True)
+
+# Limit recursion depth
+entries = sypy.ls("/path", recursive=True, max_depth=2)
+```
+
+### Remote Storage
+
+```python
+import os
+
+# SSH listing
+entries = sypy.ls("user@host:/remote/path")
+
+# S3 listing (uses environment credentials)
+os.environ['AWS_ACCESS_KEY_ID'] = '...'
+os.environ['AWS_SECRET_ACCESS_KEY'] = '...'
+entries = sypy.ls("s3://bucket/path/")
+
+# GCS listing
+os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = '/path/to/key.json'
+entries = sypy.ls("gs://bucket/path/")
+```
+
+### Working with Metadata
+
+```python
+entries = sypy.ls("/path", recursive=True)
+
+# MIME type filtering
+rust_files = [e for e in entries if e.mime_type == "text/x-rust"]
+images = [e for e in entries if e.mime_type and e.mime_type.startswith("image/")]
+
+# Size calculations
+total_size = sum(e.size for e in entries if not e.is_dir)
+print(f"Total: {total_size / 1024 / 1024:.2f} MB")
+
+# Find large files
+large_files = [e for e in entries if e.size > 100 * 1024 * 1024]  # > 100MB
+for f in sorted(large_files, key=lambda x: -x.size):
+    print(f"{f.path}: {f.size / 1024 / 1024:.1f} MB")
+
+# Sparse file detection (Unix only)
+sparse_files = [e for e in entries if e.is_sparse]
+for f in sparse_files:
+    ratio = f.size / f.allocated_size if f.allocated_size else 1
+    print(f"{f.path}: {ratio:.1f}x sparse ratio")
+
+# Hard link detection (Unix only)
+hardlinked = [e for e in entries if e.num_links and e.num_links > 1]
+for f in hardlinked:
+    print(f"{f.path}: {f.num_links} links (inode {f.inode})")
+```
+
+### TypedDict Integration
+
+```python
+from sypy import ListEntryDict
+import json
+
+# Convert to dicts for JSON APIs or databases
+entries = sypy.ls("/path", recursive=True)
+dicts: list[ListEntryDict] = [entry.to_dict() for entry in entries]
+
+# Type-safe field access (type checkers understand all fields)
+for d in dicts:
+    path: str = d['path']
+    size: int = d['size']
+    mod_time: str = d['mod_time']
+    is_dir: bool = d['is_dir']
+    
+    # Optional fields (check first)
+    if 'mime_type' in d:
+        mime: str = d['mime_type']
+        print(f"{path}: {mime}")
+
+# Serialize to JSON
+json_str = json.dumps(dicts, indent=2)
+print(json_str)
+```
+
+### Performance - S3/GCS
+
+```python
+import time
+
+# Efficient flat listing (uses delimiter, fast)
+start = time.time()
+entries = sypy.ls("s3://my-bucket/path/")  # Non-recursive
+print(f"Listed {len(entries)} entries in {time.time() - start:.2f}s")
+# Typical: 0.5-1.0s for hundreds of objects
+
+# Full recursive listing (scans entire tree)
+start = time.time()
+entries = sypy.ls("s3://my-bucket/path/", recursive=True)
+print(f"Listed {len(entries)} entries in {time.time() - start:.2f}s")
+# Typical: 18-20s for 66K objects
+```
+
+### Real-World Examples
+
+#### Find Recently Modified Files
+
+```python
+from datetime import datetime, timedelta
+
+entries = sypy.ls("s3://bucket/logs/", recursive=True, files_only=True)
+
+# Parse modification times
+recent = []
+cutoff = datetime.now() - timedelta(days=7)
+
+for e in entries:
+    mod_time = datetime.fromisoformat(e.mod_time.replace('Z', '+00:00'))
+    if mod_time > cutoff:
+        recent.append((e.path, mod_time))
+
+print(f"Files modified in last 7 days: {len(recent)}")
+```
+
+#### Calculate Storage Costs
+
+```python
+entries = sypy.ls("s3://bucket/", recursive=True, files_only=True)
+
+total_bytes = sum(e.size for e in entries)
+total_gb = total_bytes / (1024 ** 3)
+
+# S3 Standard pricing: ~$0.023/GB/month
+estimated_cost = total_gb * 0.023
+
+print(f"Total storage: {total_gb:.2f} GB")
+print(f"Estimated monthly cost: ${estimated_cost:.2f}")
+```
+
+#### Inventory Report
+
+```python
+import csv
+from collections import defaultdict
+
+entries = sypy.ls("gs://bucket/data/", recursive=True)
+
+# Group by MIME type
+by_type = defaultdict(lambda: {'count': 0, 'size': 0})
+
+for e in entries:
+    if not e.is_dir and e.mime_type:
+        by_type[e.mime_type]['count'] += 1
+        by_type[e.mime_type]['size'] += e.size
+
+# Export to CSV
+with open('storage_inventory.csv', 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(['MIME Type', 'File Count', 'Total Size (MB)'])
+    
+    for mime, stats in sorted(by_type.items(), key=lambda x: -x[1]['size']):
+        size_mb = stats['size'] / (1024 * 1024)
+        writer.writerow([mime, stats['count'], f"{size_mb:.2f}"])
+
+print("Inventory report saved to storage_inventory.csv")
+```
+
+### Performance Tips
+
+| Use Case | Recommendation |
+|----------|----------------|
+| List S3/GCS root | **Don't use `-R`** (flat is 27x faster) |
+| Scan large bucket | Use `-R` only when needed |
+| Filter files | Use `files_only=True` client-side |
+| Process metadata | Convert to dict with `.to_dict()` |
+
+### ListEntry Fields
+
+| Field | Type | Description | Available On |
+|-------|------|-------------|--------------|
+| `path` | str | Relative path | All |
+| `size` | int | Size in bytes | All |
+| `mod_time` | str | RFC3339 timestamp | All |
+| `is_dir` | bool | Is directory | All |
+| `entry_type` | str | "file", "directory", "symlink" | All |
+| `mime_type` | str? | Inferred MIME type | All |
+| `symlink_target` | str? | Symlink target | Local, SSH |
+| `is_sparse` | bool? | Sparse file | Local, SSH (Unix) |
+| `allocated_size` | int? | Actual disk usage | Local, SSH (Unix) |
+| `inode` | int? | Inode number | Local, SSH (Unix) |
+| `num_links` | int? | Hard link count | Local, SSH (Unix) |
+
+---
+
 ## Summary
 
 | Scenario | Recommended Settings |
@@ -943,6 +1172,8 @@ print(f"Rate: {stats.bytes_transferred / elapsed / 1024 / 1024:.1f} MB/s")
 | S3 large files | `parallel=4`, `request_timeout_secs=300` |
 | GCS backup | `parallel=20`, `verify=True` |
 | Mirror/clone | `delete=True`, `checksum=True` |
+| **List S3/GCS flat** | **No `-R` flag** (27x faster) |
+| **List recursively** | `recursive=True` (complete scan) |
 
 ---
 

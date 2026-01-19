@@ -225,11 +225,22 @@ impl Transport for S3Transport {
             Some(ObjectPath::from(self.prefix.clone()))
         };
 
+        tracing::debug!(
+            "Starting S3 listing with prefix: {:?} (full recursive scan)",
+            prefix
+        );
         let mut entries = Vec::new();
         let mut list_stream = self.store.list(prefix.as_ref());
+        let start = std::time::Instant::now();
 
         while let Some(meta) = list_stream.next().await {
             let meta = meta.map_err(|e| {
+                tracing::error!(
+                    "S3 list error after {} entries, {:?}: {}",
+                    entries.len(),
+                    start.elapsed(),
+                    e
+                );
                 SyncError::Io(std::io::Error::other(format!(
                     "Failed to retrieve object metadata: {}",
                     e
@@ -259,8 +270,107 @@ impl Transport for S3Transport {
                 acls: None,
                 bsd_flags: None,
             });
+
+            if entries.len() % 1000 == 0 {
+                tracing::info!(
+                    "Listed {} objects so far ({:?})",
+                    entries.len(),
+                    start.elapsed()
+                );
+            }
         }
 
+        tracing::info!(
+            "S3 listing complete: {} entries in {:?}",
+            entries.len(),
+            start.elapsed()
+        );
+        Ok(entries)
+    }
+
+    async fn scan_flat(&self, _path: &Path) -> Result<Vec<FileEntry>> {
+        use object_store::path::Path as ObjectPath;
+
+        let prefix = if self.prefix.is_empty() {
+            None
+        } else {
+            Some(ObjectPath::from(self.prefix.clone()))
+        };
+
+        tracing::debug!(
+            "Starting S3 flat listing with prefix: {:?} (using delimiter)",
+            prefix
+        );
+        let mut entries = Vec::new();
+
+        // Use list_with_delimiter for efficient non-recursive listing
+        // This tells S3 to only return objects at the current level, not traverse subdirectories
+        let list_result = self
+            .store
+            .list_with_delimiter(prefix.as_ref())
+            .await
+            .map_err(|e| {
+                SyncError::Io(std::io::Error::other(format!(
+                    "Failed to list S3 objects: {}",
+                    e
+                )))
+            })?;
+
+        let object_count = list_result.objects.len();
+        let dir_count = list_result.common_prefixes.len();
+
+        // Process regular objects (files at this level)
+        for meta in list_result.objects {
+            let key = meta.location.as_ref();
+            let size = meta.size;
+            let modified = meta.last_modified.into();
+
+            entries.push(FileEntry {
+                path: Arc::new(PathBuf::from(key)),
+                relative_path: Arc::new(self.object_path_to_path(&meta.location)),
+                size,
+                modified,
+                is_dir: false,
+                is_symlink: false,
+                symlink_target: None,
+                is_sparse: false,
+                allocated_size: size,
+                xattrs: None,
+                inode: None,
+                nlink: 1,
+                acls: None,
+                bsd_flags: None,
+            });
+        }
+
+        // Process common prefixes (directories at this level)
+        for prefix_path in list_result.common_prefixes {
+            let key = prefix_path.as_ref();
+
+            entries.push(FileEntry {
+                path: Arc::new(PathBuf::from(key)),
+                relative_path: Arc::new(self.object_path_to_path(&prefix_path)),
+                size: 0,
+                modified: std::time::SystemTime::UNIX_EPOCH,
+                is_dir: true,
+                is_symlink: false,
+                symlink_target: None,
+                is_sparse: false,
+                allocated_size: 0,
+                xattrs: None,
+                inode: None,
+                nlink: 1,
+                acls: None,
+                bsd_flags: None,
+            });
+        }
+
+        tracing::info!(
+            "S3 flat listing complete: {} entries ({} files, {} dirs)",
+            entries.len(),
+            object_count,
+            dir_count
+        );
         Ok(entries)
     }
 

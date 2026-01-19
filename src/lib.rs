@@ -9,6 +9,7 @@ pub mod filter;
 pub mod fs_util;
 pub mod hooks;
 pub mod integrity;
+pub mod ls;
 pub mod path;
 pub mod perf;
 pub mod resource;

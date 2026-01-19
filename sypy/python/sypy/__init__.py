@@ -32,7 +32,7 @@ Example:
     >>> s3 = sypy.S3Config(..., client_options=options)
     >>> stats = sypy.sync("/local/", "s3://bucket/", s3=s3, parallel=100)
 
-    # Dry-run with typed summary
+        # Dry-run with typed summary
     >>> stats = sypy.sync("/source", "/dest", dry_run=True)
     >>> summary = stats.dry_run_summary
     >>> print(f"Would create {summary['would_create']['count']} files")
@@ -59,6 +59,7 @@ class DryRunSummary(TypedDict):
     total_bytes: int
 
 
+# Import TypedDict for ls functionality
 from sypy._sypy import (
     # Dry-run classes
     ChangeAction,
@@ -69,6 +70,8 @@ from sypy._sypy import (
     FileChange,
     # Config classes
     GcsConfig,
+    # List classes
+    ListEntry,
     S3Config,
     SshConfig,
     SymlinkChange,
@@ -79,15 +82,17 @@ from sypy._sypy import (
     SyncStats,
     # Version
     __version__,
+    # Functions
+    ls,
     # CLI functions
     main,
-    # Functions
     parse_path,
     run_daemon,
     run_server,
     sync,
     sync_with_options,
 )
+from sypy.ls_types import ListEntryDict
 
 __all__ = [
     # Dry-run classes
@@ -102,6 +107,9 @@ __all__ = [
     "FileChange",
     # Config classes
     "GcsConfig",
+    # List classes
+    "ListEntry",
+    "ListEntryDict",
     "S3Config",
     "SshConfig",
     "SymlinkChange",
@@ -112,9 +120,10 @@ __all__ = [
     "SyncStats",
     # Version
     "__version__",
+    # Functions
+    "ls",
     # CLI functions
     "main",
-    # Functions
     "parse_path",
     "run_daemon",
     "run_server",

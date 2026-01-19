@@ -7,8 +7,9 @@ use crate::temp_file::TempFileGuard;
 use async_trait::async_trait;
 use futures::stream::{BoxStream, Stream, StreamExt};
 use std::fs::{self, File};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 
@@ -243,6 +244,97 @@ impl Transport for LocalTransport {
         tokio::task::spawn_blocking(move || {
             let scanner = Scanner::new(&path).with_options(options);
             scanner.scan()
+        })
+        .await
+        .map_err(|e| SyncError::Io(std::io::Error::other(e.to_string())))?
+    }
+
+    async fn scan_flat(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        // For local transport, read only direct children (no recursion)
+        let path = path.to_path_buf();
+
+        tokio::task::spawn_blocking(move || {
+            let mut entries = Vec::new();
+
+            let read_dir = fs::read_dir(&path).map_err(|e| SyncError::ReadDirError {
+                path: path.clone(),
+                source: e,
+            })?;
+
+            for entry_result in read_dir {
+                let entry = entry_result.map_err(|e| SyncError::ReadDirError {
+                    path: path.clone(),
+                    source: e,
+                })?;
+
+                let entry_path = entry.path();
+                let metadata = entry.metadata().map_err(|e| SyncError::ReadDirError {
+                    path: entry_path.clone(),
+                    source: e,
+                })?;
+
+                let file_name = entry.file_name();
+                let relative_path = PathBuf::from(&file_name);
+
+                // Detect sparse files
+                let (is_sparse, allocated_size) = if metadata.is_file() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt as UnixMetadata;
+                        let blocks = metadata.blocks();
+                        let file_size = metadata.len();
+                        let alloc = blocks * 512;
+                        let sparse = file_size > 4096 && alloc < file_size.saturating_sub(4096);
+                        (sparse, alloc)
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        (false, metadata.len())
+                    }
+                } else {
+                    (false, 0)
+                };
+
+                // Get hardlink info
+                let (inode, nlink) = {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt as UnixMetadata;
+                        (Some(metadata.ino()), metadata.nlink())
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        (None, 1)
+                    }
+                };
+
+                let (is_symlink, symlink_target) = if metadata.is_symlink() {
+                    (true, fs::read_link(&entry_path).ok().map(Arc::new))
+                } else {
+                    (false, None)
+                };
+
+                entries.push(FileEntry {
+                    path: Arc::new(entry_path),
+                    relative_path: Arc::new(relative_path),
+                    size: metadata.len(),
+                    modified: metadata
+                        .modified()
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                    is_dir: metadata.is_dir(),
+                    is_symlink,
+                    symlink_target,
+                    is_sparse,
+                    allocated_size,
+                    xattrs: None, // Skip xattrs for flat listing (performance)
+                    inode,
+                    nlink,
+                    acls: None,      // Skip ACLs for flat listing (performance)
+                    bsd_flags: None, // Skip BSD flags for flat listing (performance)
+                });
+            }
+
+            Ok(entries)
         })
         .await
         .map_err(|e| SyncError::Io(std::io::Error::other(e.to_string())))?

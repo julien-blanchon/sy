@@ -167,3 +167,7 @@ path = "src/bin/sy-bench-gen.rs"
 [[bin]]
 name = "sy-scan"
 path = "src/bin/sy-scan.rs"
+
+[[bin]]
+name = "sy-ls"
+path = "src/bin/sy-ls.rs"

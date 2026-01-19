@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod dryrun;
 mod error;
+mod ls;
 mod options;
 mod path;
 mod progress;
@@ -23,6 +24,7 @@ fn _sypy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<stats::PySyncError>()?;
     m.add_class::<path::PySyncPath>()?;
     m.add_class::<options::PySyncOptions>()?;
+    m.add_class::<ls::PyListEntry>()?;
 
     // Register config classes
     m.add_class::<config::PyCloudClientOptions>()?;
@@ -41,6 +43,7 @@ fn _sypy(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sync::sync, m)?)?;
     m.add_function(wrap_pyfunction!(sync::sync_with_options, m)?)?;
     m.add_function(wrap_pyfunction!(path::parse_path, m)?)?;
+    m.add_function(wrap_pyfunction!(ls::ls, m)?)?;
 
     // Register CLI functions
     m.add_function(wrap_pyfunction!(cli::main, m)?)?;
