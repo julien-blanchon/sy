@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sy-python"
-version = "0.2.0"
+version = "0.2.1"
 description = "Python bindings for sy - Modern file synchronization tool"
 license = { text = "MIT" }
 requires-python = ">=3.8"

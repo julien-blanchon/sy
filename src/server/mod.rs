@@ -376,11 +376,16 @@ where
 
         let (_, abs_path, _, _, _) = &files[idx];
 
-        // Read file data
-        let data = match std::fs::read(abs_path) {
-            Ok(d) => d,
-            Err(e) => {
+        // Read file data (use spawn_blocking for async compatibility)
+        let abs_path_clone = abs_path.clone();
+        let data = match tokio::task::spawn_blocking(move || std::fs::read(&abs_path_clone)).await {
+            Ok(Ok(d)) => d,
+            Ok(Err(e)) => {
                 tracing::warn!("Failed to read {}: {}", abs_path.display(), e);
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!("Task join error reading {}: {}", abs_path.display(), e);
                 continue;
             }
         };
