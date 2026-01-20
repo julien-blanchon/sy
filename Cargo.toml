@@ -171,3 +171,15 @@ path = "src/bin/sy-scan.rs"
 [[bin]]
 name = "sy-ls"
 path = "src/bin/sy-ls.rs"
+
+[[bin]]
+name = "sy-rm"
+path = "src/bin/sy-rm.rs"
+
+[[bin]]
+name = "sy-put"
+path = "src/bin/sy-put.rs"
+
+[[bin]]
+name = "sy-get"
+path = "src/bin/sy-get.rs"

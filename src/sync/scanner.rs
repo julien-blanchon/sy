@@ -445,8 +445,9 @@ impl Iterator for StreamingScanner {
                 Err(e) => return Some(Err(SyncError::Io(std::io::Error::other(e.to_string())))),
             };
 
-            // Skip the root directory itself
-            if entry.path() == self.root {
+            // Skip the root directory itself, but NOT if root is a single file
+            // (for single file scanning, the file IS the root and should be included)
+            if entry.path() == self.root && self.root.is_dir() {
                 continue;
             }
 
@@ -473,6 +474,9 @@ impl ParallelStreamingScanner {
         // Bounded channel prevents memory blowup if consumer is slow
         let (sender, receiver) = bounded(1024);
 
+        // Check if root is a file (not a directory) - for single file scanning
+        let root_is_file = root.is_file();
+
         let handle = std::thread::spawn(move || {
             walker.run(|| {
                 let sender = sender.clone();
@@ -480,8 +484,9 @@ impl ParallelStreamingScanner {
                 Box::new(move |result| {
                     match result {
                         Ok(entry) => {
-                            // Skip the root directory itself
-                            if entry.path() == root {
+                            // Skip the root directory itself, but NOT if root is a single file
+                            // (for single file scanning, the file IS the root and should be included)
+                            if entry.path() == root && !root_is_file {
                                 return WalkState::Continue;
                             }
 

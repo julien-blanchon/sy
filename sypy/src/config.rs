@@ -481,10 +481,25 @@ impl PySshConfig {
             config.port = port;
         }
         if let Some(ref key) = self.key_file {
-            config.identity_file = vec![PathBuf::from(key)];
+            // Expand tilde in key file path
+            let expanded_key = if key.starts_with("~/") {
+                if let Some(home) = dirs::home_dir() {
+                    home.join(&key[2..])
+                } else {
+                    PathBuf::from(key)
+                }
+            } else if key == "~" {
+                dirs::home_dir().unwrap_or_else(|| PathBuf::from(key))
+            } else {
+                PathBuf::from(key)
+            };
+            config.identity_file = vec![expanded_key];
         }
         if let Some(ref proxy) = self.proxy_jump {
             config.proxy_jump = Some(proxy.clone());
+        }
+        if let Some(ref pwd) = self.password {
+            config.password = Some(pwd.clone());
         }
         config.compression = self.compression;
 

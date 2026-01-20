@@ -473,38 +473,54 @@ where
     let mut files: Vec<(String, PathBuf, u64, i64, u32)> = Vec::new();
     let mut symlinks: Vec<SymlinkEntry> = Vec::new();
 
-    for entry in entries {
-        if let Ok(rel_path) = entry.path.strip_prefix(root_path) {
-            if rel_path.as_os_str().is_empty() {
-                continue;
-            }
-            if let Some(path_str) = rel_path.to_str() {
-                let mtime = entry
-                    .modified
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
+    // Check if root_path is a single file (not a directory)
+    let is_single_file = root_path.is_file();
 
-                if entry.is_dir {
-                    directories.push(path_str.to_string());
-                } else if entry.is_symlink {
-                    if let Some(target) = entry.symlink_target {
-                        if let Some(target_str) = target.to_str() {
-                            symlinks.push(SymlinkEntry {
-                                path: path_str.to_string(),
-                                target: target_str.to_string(),
-                            });
-                        }
+    for entry in entries {
+        // For single file sources, don't strip prefix - use just the filename
+        let rel_path_str = if is_single_file {
+            // Single file: use just the filename as the relative path
+            root_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        } else {
+            // Directory: strip the root prefix to get relative path
+            entry
+                .path
+                .strip_prefix(root_path)
+                .ok()
+                .filter(|p| !p.as_os_str().is_empty()) // Skip root directory entry
+                .and_then(|p| p.to_str())
+                .map(|s| s.to_string())
+        };
+
+        if let Some(path_str) = rel_path_str {
+            let mtime = entry
+                .modified
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+
+            if entry.is_dir {
+                directories.push(path_str.to_string());
+            } else if entry.is_symlink {
+                if let Some(target) = entry.symlink_target {
+                    if let Some(target_str) = target.to_str() {
+                        symlinks.push(SymlinkEntry {
+                            path: path_str.to_string(),
+                            target: target_str.to_string(),
+                        });
                     }
-                } else {
-                    files.push((
-                        path_str.to_string(),
-                        entry.path.to_path_buf(),
-                        entry.size,
-                        mtime,
-                        0o644,
-                    ));
                 }
+            } else {
+                files.push((
+                    path_str.to_string(),
+                    entry.path.to_path_buf(),
+                    entry.size,
+                    mtime,
+                    0o644,
+                ));
             }
         }
     }
@@ -557,7 +573,9 @@ where
     }
     let ack = super::protocol::FileListAck::read(reader).await?;
 
-    // Step 3: Send files that client requested
+    // Step 3: Send files that client requested (pipelined - send all, then collect ACKs)
+    let mut files_sent: Vec<u32> = Vec::new();
+
     for decision in &ack.decisions {
         if decision.action == super::protocol::Action::Skip {
             continue;
@@ -570,10 +588,16 @@ where
 
         let (_, abs_path, _, _, _) = &files[idx];
 
-        let data = match std::fs::read(abs_path) {
-            Ok(d) => d,
-            Err(e) => {
+        // Read file data (use spawn_blocking for async compatibility)
+        let abs_path_clone = abs_path.clone();
+        let data = match tokio::task::spawn_blocking(move || std::fs::read(&abs_path_clone)).await {
+            Ok(Ok(d)) => d,
+            Ok(Err(e)) => {
                 warn!("Failed to read {}: {}", abs_path.display(), e);
+                continue;
+            }
+            Err(e) => {
+                warn!("Task join error reading {}: {}", abs_path.display(), e);
                 continue;
             }
         };
@@ -585,9 +609,14 @@ where
             data,
         };
         file_data.write(writer).await?;
-        writer.flush().await?;
+        files_sent.push(decision.index);
+    }
 
-        // Wait for FILE_DONE
+    // Flush once after sending all files
+    writer.flush().await?;
+
+    // Collect all FILE_DONE responses
+    for _ in &files_sent {
         let _len = reader.read_u32().await?;
         let type_byte = reader.read_u8().await?;
         if type_byte != MessageType::FileDone as u8 {

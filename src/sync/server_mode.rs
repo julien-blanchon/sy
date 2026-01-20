@@ -841,7 +841,9 @@ pub async fn sync_pull_server_mode_with_config(
 
         session.send_file_list_ack(decisions).await?;
 
-        // Step 3: Receive files (only in non-dry-run mode)
+        // Step 3: Receive files (pipelined - receive all, then send all ACKs)
+        let mut files_received: Vec<(u32, u8)> = Vec::new(); // (idx, status)
+
         for (idx, rel_path) in &files_to_receive {
             // Start transfer progress
             if let Some(ref progress) = progress {
@@ -873,13 +875,18 @@ pub async fn sync_pull_server_mode_with_config(
                     if let Some(ref progress) = progress {
                         progress.finish_transfer(&PathBuf::from(rel_path), file_size);
                     }
-                    session.send_file_done(*idx, 0).await?;
+                    files_received.push((*idx, 0)); // Status OK
                 }
                 Err(e) => {
                     tracing::warn!("Failed to write {}: {}", full_path.display(), e);
-                    session.send_file_done(*idx, 2).await?; // STATUS_WRITE_ERROR
+                    files_received.push((*idx, 2)); // STATUS_WRITE_ERROR
                 }
             }
+        }
+
+        // Send all FILE_DONE responses at once (pipelined)
+        for (idx, status) in &files_received {
+            session.send_file_done(*idx, *status).await?;
         }
     }
 

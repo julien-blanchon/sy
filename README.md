@@ -129,6 +129,34 @@ Daemon mode is most useful when:
 
 > **Trailing slash:** sy follows rsync semantics — `/source` copies the directory, `/source/` copies contents only.
 
+## File Operations Utilities
+
+Standalone commands for direct file operations across all backends:
+
+```bash
+# List files
+sy-ls /local/path                           # Local
+sy-ls user@host:/remote -R                  # SSH (recursive)
+sy-ls s3://bucket/prefix/ --format human    # S3
+
+# Upload (local → remote)
+sy-put /local/dir s3://bucket/prefix/ -R
+sy-put /local/file.txt user@host:/remote/
+sy-put /data gs://bucket/backup/ -R --exclude "*.tmp"
+
+# Download (remote → local)
+sy-get s3://bucket/data/ /local/dir -R
+sy-get user@host:/remote/file.txt /local/
+sy-get gs://bucket/logs/ ./logs -R --include "*.log"
+
+# Remove files
+sy-rm s3://bucket/old-data/ -R -f           # Remove recursively
+sy-rm user@host:/tmp/cache -R --rmdirs      # Remove files and empty dirs
+sy-rm /local/logs --include "*.log" --dry-run
+```
+
+All utilities support `--dry-run`, `--include/--exclude` filters, and `--max-depth`.
+
 ## Features
 
 - **Delta sync** — Only transfers changed bytes (rsync algorithm)

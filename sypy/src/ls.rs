@@ -188,15 +188,15 @@ async fn ls_async(
         }
         #[cfg(feature = "ssh")]
         SyncPath::Remote { host, user, .. } => {
-            let config = if let Some(user) = user {
-                SshConfig {
-                    hostname: host.clone(),
-                    user: user.clone(),
-                    ..Default::default()
-                }
-            } else {
-                parse_ssh_config(&host)?
-            };
+            // Always parse SSH config first to get port, identity files, and resolved hostname
+            // Then override user if provided in the path
+            let mut config = parse_ssh_config(&host).unwrap_or_else(|_| SshConfig {
+                hostname: host.clone(),
+                ..Default::default()
+            });
+            if let Some(user) = user {
+                config.user = user.clone();
+            }
 
             let retry_config = RetryConfig::default();
             let transport = SshTransport::with_retry_config(&config, 1, retry_config).await?;

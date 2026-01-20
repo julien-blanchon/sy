@@ -57,26 +57,24 @@ print(f"sypy version: {sypy.__version__}")
 ```python
 import sypy
 
-# Local sync
+# Local sync (bidirectional)
 sypy.sync("/source/", "/dest/")
 
-# Copy operations (rclone copy style)
-sypy.sync("/local/", "s3://bucket/", ignore_existing=True)  # Skip existing files
-sypy.sync("/local/", "s3://bucket/", update=True)           # Update if newer
+# PUT - Upload files to remote
+sypy.put("/local/file.txt", "user@host:/remote/")              # Single file via SSH
+sypy.put("/local/dir/", "user@host:/remote/", recursive=True)  # Directory via SSH
+sypy.put("/local/", "daemon:/remote/", daemon_socket="/tmp/sy.sock")  # Via daemon
 
-# SSH sync
-sypy.sync("/local/", "user@host:/remote/")
+# GET - Download files from remote
+sypy.get("user@host:/remote/file.txt", "/local/")              # Single file via SSH
+sypy.get("user@host:/remote/dir/", "/local/", recursive=True)  # Directory via SSH
+sypy.get("daemon:/remote/", "/local/", daemon_socket="/tmp/sy.sock")  # Via daemon
 
-# SSH with daemon mode (2x faster for repeated syncs)
-sypy.sync("/local/", "user@host:/remote/", daemon_auto=True)
-
-# S3 sync
-s3 = sypy.S3Config(access_key_id="...", secret_access_key="...", region="us-east-1")
-sypy.sync("/local/", "s3://bucket/path/", s3=s3)
-
-# GCS sync
-gcs = sypy.GcsConfig(credentials_file="/path/to/key.json")
-sypy.sync("/local/", "gs://bucket/path/", gcs=gcs)
+# RM - Remove files
+sypy.rm("/local/file.txt")                                     # Single file
+sypy.rm("/local/dir/", recursive=True)                         # Directory (files only)
+sypy.rm("/local/dir/", recursive=True, rmdirs=True)            # Directory + subdirs
+sypy.rm("user@host:/remote/file.txt", sftp=True)               # Remote via SFTP
 ```
 
 ---
@@ -153,7 +151,7 @@ print(f"Synced {stats.files_created} files in {stats.duration_secs:.2f}s")
 sypy.sync("/project/", "/backup/")
 # Result: /backup/file1.txt, /backup/file2.txt
 
-# WITHOUT trailing slash: sync the directory itself  
+# WITHOUT trailing slash: sync the directory itself
 sypy.sync("/project", "/backup/")
 # Result: /backup/project/file1.txt, /backup/project/file2.txt
 ```
@@ -212,11 +210,11 @@ stats = sypy.sync(
 
 `sy` is fundamentally a **synchronization tool** (like `rsync`), but it can be used for **copy operations** (like `rclone copy`):
 
-| Tool | Default Behavior |
-|------|------------------|
-| `rclone copy` | Copy new files only, skip existing files |
-| `sy` (default) | Copy new files + update changed files (size/mtime differ) |
-| `sy --ignore-existing` | Copy new files only (exact `rclone copy` behavior) |
+| Tool                   | Default Behavior                                          |
+| ---------------------- | --------------------------------------------------------- |
+| `rclone copy`          | Copy new files only, skip existing files                  |
+| `sy` (default)         | Copy new files + update changed files (size/mtime differ) |
+| `sy --ignore-existing` | Copy new files only (exact `rclone copy` behavior)        |
 
 ### Basic Copy (sy default)
 
@@ -233,6 +231,7 @@ print(f"Created: {stats.files_created}, Updated: {stats.files_updated}")
 ```
 
 **Default behavior:**
+
 - ✅ Copies new files
 - ✅ Updates files where size or mtime differs
 - ❌ Never deletes files (unless `delete=True`)
@@ -258,6 +257,7 @@ stats = sypy.sync("/local/", "s3://bucket/path/", update=True)
 ```
 
 **Behavior:**
+
 - ✅ Copies new files
 - ✅ Updates files where source is newer
 - ⏭️ Skips files where destination is newer or same age
@@ -362,7 +362,7 @@ def copy_to_backups(source: str, s3_config):
         "s3://secondary-backup/data/",
         "s3://archive-backup/data/",
     ]
-    
+
     for dest in destinations:
         stats = sypy.sync(source, dest, s3=s3_config, ignore_existing=True)
         print(f"{dest}: copied {stats.files_created} files")
@@ -374,13 +374,13 @@ copy_to_backups("/local/important/", s3)
 
 ### Copy vs Sync Decision Guide
 
-| Goal | Use |
-|------|-----|
-| One-way copy, skip existing | `ignore_existing=True` |
-| One-way copy, update changed | Default (no flags) |
-| One-way copy, update if newer | `update=True` |
-| Mirror (copy + delete extra) | `delete=True` |
-| Two-way sync with conflict resolution | `bidirectional=True` |
+| Goal                                  | Use                    |
+| ------------------------------------- | ---------------------- |
+| One-way copy, skip existing           | `ignore_existing=True` |
+| One-way copy, update changed          | Default (no flags)     |
+| One-way copy, update if newer         | `update=True`          |
+| Mirror (copy + delete extra)          | `delete=True`          |
+| Two-way sync with conflict resolution | `bidirectional=True`   |
 
 ### Command Line Equivalents
 
@@ -444,15 +444,30 @@ stats = sypy.sync("/local/", "user@internal-server:/remote/", ssh=ssh)
 
 Daemon mode eliminates SSH connection overhead for repeated syncs, providing **~2x speedup**.
 
+### Requirements
+
+**SSH Key-Based Authentication Required**: Daemon mode uses SSH ControlMaster for connection multiplexing, which requires key-based authentication. Password authentication will not work because ControlMaster cannot prompt for passwords interactively.
+
+```bash
+# Set up SSH keys (if not already done)
+ssh-keygen -t ed25519 -C "your_email@example.com"
+
+# Copy public key to remote server
+ssh-copy-id user@host
+
+# Verify key-based auth works
+ssh -o BatchMode=yes user@host "echo 'Key auth works!'"
+```
+
 ### When to Use Daemon Mode
 
-| Scenario | Use `daemon_auto=True`? |
-|----------|------------------------|
-| Single one-time sync | ❌ No (overhead not worth it) |
-| Repeated syncs (development) | ✅ Yes |
-| CI/CD deployments | ✅ Yes |
-| Watch mode / continuous sync | ✅ Yes |
-| Backup scripts running frequently | ✅ Yes |
+| Scenario                          | Use `daemon_auto=True`?       |
+| --------------------------------- | ----------------------------- |
+| Single one-time sync              | ❌ No (overhead not worth it) |
+| Repeated syncs (development)      | ✅ Yes                        |
+| CI/CD deployments                 | ✅ Yes                        |
+| Watch mode / continuous sync      | ✅ Yes                        |
+| Backup scripts running frequently | ✅ Yes                        |
 
 ### Basic Usage
 
@@ -484,6 +499,7 @@ for i in range(5):
 ```
 
 **Typical results:**
+
 - Regular SSH: ~5.3s average
 - Daemon mode: ~2.4s average (after first run)
 - **Speedup: 2.2x**
@@ -509,11 +525,11 @@ Subsequent calls:
 
 ### Socket Locations
 
-| Location | Path | Purpose |
-|----------|------|---------|
-| Remote | `~/.sy/daemon.sock` | Daemon listens here |
-| Local | `/tmp/sy-daemon/{host}.sock` | Forwarded socket |
-| Local | `/tmp/sy-daemon/{host}.control` | SSH ControlMaster |
+| Location | Path                            | Purpose             |
+| -------- | ------------------------------- | ------------------- |
+| Remote   | `~/.sy/daemon.sock`             | Daemon listens here |
+| Local    | `/tmp/sy-daemon/{host}.sock`    | Forwarded socket    |
+| Local    | `/tmp/sy-daemon/{host}.control` | SSH ControlMaster   |
 
 ### Connection Persistence
 
@@ -785,10 +801,10 @@ def backup_to_s3(source: str, bucket: str, prefix: str):
         region="us-east-1",
         client_options=sypy.CloudClientOptions.high_throughput(),
     )
-    
+
     date = datetime.now().strftime("%Y-%m-%d")
     dest = f"s3://{bucket}/{prefix}/{date}/"
-    
+
     stats = sypy.sync(
         source,
         dest,
@@ -796,7 +812,7 @@ def backup_to_s3(source: str, bucket: str, prefix: str):
         parallel=50,
         exclude=["*.log", "*.tmp", ".git"],
     )
-    
+
     print(f"Backup complete: {stats.files_created} files, "
           f"{stats.bytes_transferred / 1024 / 1024:.1f} MB")
     return stats
@@ -818,11 +834,11 @@ def deploy(env: str):
         "staging": "deploy@staging.example.com:/var/www/app",
         "production": "deploy@prod.example.com:/var/www/app",
     }
-    
+
     if env not in servers:
         print(f"Unknown environment: {env}")
         sys.exit(1)
-    
+
     stats = sypy.sync(
         "./dist/",
         servers[env],
@@ -830,7 +846,7 @@ def deploy(env: str):
         delete=True,       # Remove old files
         exclude=[".env", "*.log"],
     )
-    
+
     if stats.success:
         print(f"✓ Deployed to {env}: {stats.files_created + stats.files_updated} files")
     else:
@@ -853,20 +869,20 @@ import tempfile
 def process_data():
     s3 = sypy.S3Config(access_key_id="...", secret_access_key="...", region="us-east-1")
     gcs = sypy.GcsConfig(credentials_file="/path/to/key.json")
-    
+
     with tempfile.TemporaryDirectory() as tmpdir:
         # Download from S3
         print("Downloading from S3...")
         sypy.sync("s3://input-bucket/data/", f"{tmpdir}/input/", s3=s3)
-        
+
         # Process data
         print("Processing...")
         process_files(Path(tmpdir) / "input", Path(tmpdir) / "output")
-        
+
         # Upload to GCS
         print("Uploading to GCS...")
         stats = sypy.sync(f"{tmpdir}/output/", "gs://output-bucket/processed/", gcs=gcs)
-        
+
         print(f"Done: {stats.files_created} files uploaded")
 
 def process_files(input_dir: Path, output_dir: Path):
@@ -884,17 +900,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 def sync_to_multiple_targets(source: str, targets: list[str]):
     """Sync to multiple destinations in parallel."""
-    
+
     def sync_one(target: str):
         try:
             stats = sypy.sync(source, target, daemon_auto=True)
             return (target, stats, None)
         except Exception as e:
             return (target, None, str(e))
-    
+
     with ThreadPoolExecutor(max_workers=len(targets)) as executor:
         results = list(executor.map(sync_one, targets))
-    
+
     for target, stats, error in results:
         if error:
             print(f"✗ {target}: {error}")
@@ -929,6 +945,29 @@ sypy.sync("/local/", "user@host:/remote/")
 
 ### Daemon Mode Not Working
 
+**Most common cause: Password authentication instead of key-based auth**
+
+Daemon mode requires SSH key-based authentication. If you see errors like:
+
+- `Permission denied (publickey,password)`
+- `Failed to establish ControlMaster`
+- Timeout during daemon startup
+
+Fix by setting up SSH keys:
+
+```bash
+# 1. Generate SSH key (if you don't have one)
+ssh-keygen -t ed25519
+
+# 2. Copy key to remote server
+ssh-copy-id user@host
+
+# 3. Verify key auth works (should NOT prompt for password)
+ssh -o BatchMode=yes user@host "echo 'success'"
+```
+
+**Other troubleshooting steps:**
+
 ```bash
 # Check if daemon is running on remote
 ssh user@host "ps aux | grep 'sy --daemon'"
@@ -941,6 +980,10 @@ ssh user@host "sy --daemon --socket ~/.sy/daemon.sock &"
 
 # Check local sockets
 ls -la /tmp/sy-daemon/
+
+# Clean up stale sockets and retry
+rm -rf /tmp/sy-daemon/
+ssh user@host "pkill -f 'sy.*daemon'; rm -f ~/.sy/daemon.sock"
 ```
 
 ### S3 Permission Errors
@@ -1094,7 +1137,7 @@ for d in dicts:
     size: int = d['size']
     mod_time: str = d['mod_time']
     is_dir: bool = d['is_dir']
-    
+
     # Optional fields (check first)
     if 'mime_type' in d:
         mime: str = d['mime_type']
@@ -1179,7 +1222,7 @@ for e in entries:
 with open('storage_inventory.csv', 'w', newline='') as f:
     writer = csv.writer(f)
     writer.writerow(['MIME Type', 'File Count', 'Total Size (MB)'])
-    
+
     for mime, stats in sorted(by_type.items(), key=lambda x: -x[1]['size']):
         size_mb = stats['size'] / (1024 * 1024)
         writer.writerow([mime, stats['count'], f"{size_mb:.2f}"])
@@ -1189,45 +1232,45 @@ print("Inventory report saved to storage_inventory.csv")
 
 ### Performance Tips
 
-| Use Case | Recommendation |
-|----------|----------------|
-| List S3/GCS root | **Don't use `-R`** (flat is 27x faster) |
-| Scan large bucket | Use `-R` only when needed |
-| Filter files | Use `files_only=True` client-side |
-| Process metadata | Convert to dict with `.to_dict()` |
+| Use Case          | Recommendation                          |
+| ----------------- | --------------------------------------- |
+| List S3/GCS root  | **Don't use `-R`** (flat is 27x faster) |
+| Scan large bucket | Use `-R` only when needed               |
+| Filter files      | Use `files_only=True` client-side       |
+| Process metadata  | Convert to dict with `.to_dict()`       |
 
 ### ListEntry Fields
 
-| Field | Type | Description | Available On |
-|-------|------|-------------|--------------|
-| `path` | str | Relative path | All |
-| `size` | int | Size in bytes | All |
-| `mod_time` | str | RFC3339 timestamp | All |
-| `is_dir` | bool | Is directory | All |
-| `entry_type` | str | "file", "directory", "symlink" | All |
-| `mime_type` | str? | Inferred MIME type | All |
-| `symlink_target` | str? | Symlink target | Local, SSH |
-| `is_sparse` | bool? | Sparse file | Local, SSH (Unix) |
-| `allocated_size` | int? | Actual disk usage | Local, SSH (Unix) |
-| `inode` | int? | Inode number | Local, SSH (Unix) |
-| `num_links` | int? | Hard link count | Local, SSH (Unix) |
+| Field            | Type  | Description                    | Available On      |
+| ---------------- | ----- | ------------------------------ | ----------------- |
+| `path`           | str   | Relative path                  | All               |
+| `size`           | int   | Size in bytes                  | All               |
+| `mod_time`       | str   | RFC3339 timestamp              | All               |
+| `is_dir`         | bool  | Is directory                   | All               |
+| `entry_type`     | str   | "file", "directory", "symlink" | All               |
+| `mime_type`      | str?  | Inferred MIME type             | All               |
+| `symlink_target` | str?  | Symlink target                 | Local, SSH        |
+| `is_sparse`      | bool? | Sparse file                    | Local, SSH (Unix) |
+| `allocated_size` | int?  | Actual disk usage              | Local, SSH (Unix) |
+| `inode`          | int?  | Inode number                   | Local, SSH (Unix) |
+| `num_links`      | int?  | Hard link count                | Local, SSH (Unix) |
 
 ---
 
 ## Summary
 
-| Scenario | Recommended Settings |
-|----------|---------------------|
-| Local backup | `parallel=10`, `verify=True` |
-| SSH development | `daemon_auto=True`, `parallel=10` |
-| SSH production deploy | `daemon_auto=True`, `delete=True` |
-| S3 many small files | `parallel=50`, `high_throughput()` |
-| S3 large files | `parallel=4`, `request_timeout_secs=300` |
-| GCS backup | `parallel=20`, `verify=True` |
-| Mirror/clone | `delete=True`, `checksum=True` |
-| **List S3/GCS flat** | **No `-R` flag** (27x faster) |
-| **List recursively** | `recursive=True` (complete scan) |
+| Scenario              | Recommended Settings                     |
+| --------------------- | ---------------------------------------- |
+| Local backup          | `parallel=10`, `verify=True`             |
+| SSH development       | `daemon_auto=True`, `parallel=10`        |
+| SSH production deploy | `daemon_auto=True`, `delete=True`        |
+| S3 many small files   | `parallel=50`, `high_throughput()`       |
+| S3 large files        | `parallel=4`, `request_timeout_secs=300` |
+| GCS backup            | `parallel=20`, `verify=True`             |
+| Mirror/clone          | `delete=True`, `checksum=True`           |
+| **List S3/GCS flat**  | **No `-R` flag** (27x faster)            |
+| **List recursively**  | `recursive=True` (complete scan)         |
 
 ---
 
-*For more details, see the [API Reference](README.md#api-reference) or the [sy documentation](https://github.com/nijaru/sy).*
+_For more details, see the [API Reference](README.md#api-reference) or the [sy documentation](https://github.com/nijaru/sy)._

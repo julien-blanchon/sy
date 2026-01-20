@@ -16,6 +16,7 @@ pub struct SshConfig {
     pub control_path: Option<PathBuf>,
     pub control_persist: Option<Duration>,
     pub compression: bool,
+    pub password: Option<String>,
 }
 
 impl Default for SshConfig {
@@ -30,6 +31,7 @@ impl Default for SshConfig {
             control_path: None,
             control_persist: None,
             compression: false,
+            password: None,
         }
     }
 }
@@ -47,6 +49,7 @@ impl SshConfig {
             control_path: None,
             control_persist: None,
             compression: false,
+            password: None,
         }
     }
 

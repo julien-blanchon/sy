@@ -373,11 +373,27 @@ async fn do_sync(
             host, user, path, ..
         } = &dest
         {
+            // Convert Python SSH config to Rust if provided
+            let rust_ssh_config = ssh
+                .as_ref()
+                .map(|py_ssh| py_ssh.to_sy_ssh_config(host, user.as_deref().unwrap_or("root")));
+
             // Set up daemon connection
-            let daemon_result =
+            let daemon_result = if let Some(ref config) = rust_ssh_config {
+                sy::sync::daemon_auto::ensure_daemon_connection_with_config(
+                    host,
+                    user.as_deref(),
+                    path,
+                    Some(config),
+                    None, // Use default socket_dir for daemon_auto mode
+                )
+                .await
+                .map_err(anyhow_to_pyerr)?
+            } else {
                 sy::sync::daemon_auto::ensure_daemon_connection(host, user.as_deref(), path)
                     .await
-                    .map_err(anyhow_to_pyerr)?;
+                    .map_err(anyhow_to_pyerr)?
+            };
 
             // Perform sync using daemon
             let stats = sy::sync::daemon_mode::sync_daemon_mode(

@@ -2608,12 +2608,17 @@ name = "sypy"
 version = "0.2.3"
 dependencies = [
  "anyhow",
+ "base64",
  "dirs",
+ "filetime",
  "openssl",
  "pyo3",
+ "serde",
+ "serde_json",
  "sy",
  "thiserror 1.0.69",
  "tokio",
+ "whoami",
 ]
 
 [[package]]

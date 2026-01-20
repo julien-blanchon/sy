@@ -208,8 +208,12 @@ impl Transport for GcsTransport {
             let size = meta.size;
             let modified = meta.last_modified.into();
 
-            // Check if this is a directory marker (ends with /)
-            let is_dir = key.ends_with('/');
+            // Check if this is a directory marker:
+            // 1. Objects ending with / are always directory markers
+            // 2. 0-byte objects without file extension are likely directory markers
+            //    (created by cloud consoles or other tools)
+            let is_dir =
+                key.ends_with('/') || (size == 0 && !key.contains('.') && !key.ends_with('/'));
 
             entries.push(FileEntry {
                 path: Arc::new(PathBuf::from(key)),
@@ -344,8 +348,11 @@ impl Transport for GcsTransport {
             let size = meta.size;
             let modified = meta.last_modified.into();
 
-            // Check if this is a directory marker (ends with /)
-            let is_dir = key.ends_with('/');
+            // Check if this is a directory marker:
+            // 1. Objects ending with / are always directory markers
+            // 2. 0-byte objects without file extension are likely directory markers
+            let is_dir =
+                key.ends_with('/') || (size == 0 && !key.contains('.') && !key.ends_with('/'));
 
             // Replicate object_path_to_path logic locally to avoid self capture
             let relative_key = if !prefix_str.is_empty() {

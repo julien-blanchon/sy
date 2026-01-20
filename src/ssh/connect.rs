@@ -22,6 +22,7 @@ pub async fn connect(config: &SshConfig) -> Result<Session> {
     // Clone config data needed for authentication
     let username = config.user.clone();
     let identity_files = config.identity_file.clone();
+    let password = config.password.clone();
 
     // Wrap all sync operations (session creation, handshake, auth) in spawn_blocking
     let session = tokio::task::spawn_blocking(move || {
@@ -49,8 +50,9 @@ pub async fn connect(config: &SshConfig) -> Result<Session> {
         })?;
 
         // Configure keepalive to prevent connection drops during long transfers
-        // Send keepalive every 60 seconds, disconnect after 3 missed responses
-        session.set_keepalive(true, 60);
+        // Send keepalive every 30 seconds, disconnect after 5 missed responses
+        // This ensures connections stay alive for hours-long transfers
+        session.set_keepalive(true, 30);
 
         // Try authentication methods in order of preference:
         // 1. SSH agent (if available)
@@ -104,6 +106,14 @@ pub async fn connect(config: &SshConfig) -> Result<Session> {
             }
         }
 
+        // Try password authentication if provided
+        if let Some(ref pwd) = password {
+            if session.userauth_password(&username, pwd).is_ok() {
+                tracing::debug!("Authenticated using password");
+                return Ok(session);
+            }
+        }
+
         Err(SyncError::Io(std::io::Error::new(
             ErrorKind::PermissionDenied,
             format!("SSH authentication failed for user {}", username),
@@ -153,6 +163,7 @@ mod tests {
             control_path: None,
             control_persist: None,
             compression: false,
+            password: None,
         };
 
         assert_eq!(config.hostname, "localhost");

@@ -37,6 +37,8 @@ dev = ["pytest>=7.0", "tqdm>=4.0"]
 sy = "sypy.__main__:main"
 # Alternative entry point
 sypy = "sypy.__main__:main"
+# Remote helper for SSH transport
+sy-remote = "sypy.remote:main"
 
 [project.urls]
 Homepage = "https://github.com/nijaru/sy"

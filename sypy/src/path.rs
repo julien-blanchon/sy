@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 #[pyclass(name = "SyncPath")]
 #[derive(Clone, Debug)]
 pub struct PySyncPath {
-    inner: sy::path::SyncPath,
+    pub(crate) inner: sy::path::SyncPath,
 }
 
 #[pymethods]

@@ -72,7 +72,65 @@ sy is a file synchronization tool with adaptive strategies for different environ
 | Protocol | Custom binary | Pipelined, delta-aware |
 | Database | fjall (LSM) | Pure Rust, embedded |
 
+## CLI Utilities
+
+In addition to the main `sy` command, several standalone utilities are available for direct file operations across all supported backends:
+
+| Utility | Purpose | Similar to |
+|---------|---------|------------|
+| `sy-ls` | List files/directories on any backend | `rclone ls` |
+| `sy-rm` | Remove files/directories | `rclone delete/purge` |
+| `sy-put` | Upload local files to remote | `rclone copy {local} {remote}` |
+| `sy-get` | Download remote files to local | `rclone copy {remote} {local}` |
+
+### Common Features
+
+All utilities share these capabilities:
+- **Multi-backend**: Local, SSH, S3, GCS support
+- **Filtering**: `--include`, `--exclude` patterns (gitignore-style)
+- **Depth control**: `--max-depth` for directory operations
+- **Dry-run**: Preview operations without executing
+- **Recursive**: `-R` flag for directory operations
+
+### Path Syntax
+
+```
+local:     /path/to/file
+ssh:       user@host:/path/to/file
+s3:        s3://bucket/prefix/file
+gcs:       gs://bucket/prefix/file
+```
+
+### Usage Examples
+
+```bash
+# Upload to S3
+sy-put /local/dir s3://bucket/prefix/ -R
+
+# Download from GCS
+sy-get gs://bucket/prefix/ /local/dir -R
+
+# Remove files with filter
+sy-rm s3://bucket/logs/ -R --include "*.log" --exclude "important.log"
+
+# List SSH directory
+sy-ls user@host:/remote/path -R --format human
+```
+
 ## Component Details
 
 → See ai/design/ for detailed specs:
 - `server-mode.md` — Binary protocol specification
+- `daemon-mode.md` — Persistent daemon for fast repeated syncs
+
+→ See ai/research/ for benchmarks and analysis:
+- `cli-utilities-benchmark.md` — sy-put/get/rm design, SSH modes, performance results
+
+## Performance Summary
+
+| Backend | sy performance | Notes |
+|---------|----------------|-------|
+| **SSH (server mode)** | Same as rsync | Pipelined transfers |
+| **SSH (daemon mode)** | **2.5× faster** | Eliminates startup overhead |
+| **S3** | **45% faster** | Parallel uploads |
+| **GCS** | Rate-limited | Needs throttling (future) |

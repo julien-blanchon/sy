@@ -172,7 +172,16 @@ impl ConnectionPool {
             .expect("SSH connection pool lock poisoned during read")
             .len();
 
+        tracing::info!(
+            "expand_to: target_size={}, max_size={}, target={}, current_size={}",
+            target_size,
+            self.max_size,
+            target,
+            current_size
+        );
+
         if current_size >= target {
+            tracing::info!("expand_to: already have enough connections, returning");
             return Ok(()); // Already have enough connections
         }
 
@@ -1081,6 +1090,112 @@ impl SshTransport {
 
         Ok(TransferResult::new(file_size))
     }
+
+    /// Recursively scan a directory using pure SFTP (no sy-remote required)
+    ///
+    /// This method uses SFTP's native directory listing recursively, making it
+    /// suitable for pure SFTP mode where sy-remote is not available on the remote host.
+    pub async fn scan_sftp_recursive(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        let path_buf = path.to_path_buf();
+        let session_arc = self.connection_pool.get_session();
+
+        let entries = tokio::task::spawn_blocking(move || {
+            let session = session_arc.lock().map_err(|e| {
+                SyncError::Io(std::io::Error::other(format!(
+                    "Failed to lock session: {}",
+                    e
+                )))
+            })?;
+
+            let sftp = session.sftp().map_err(|e| {
+                SyncError::Io(std::io::Error::other(format!(
+                    "Failed to create SFTP session: {}",
+                    e
+                )))
+            })?;
+
+            fn scan_dir_recursive(
+                sftp: &ssh2::Sftp,
+                dir_path: &Path,
+                base_path: &Path,
+                entries: &mut Vec<FileEntry>,
+            ) -> std::result::Result<(), SyncError> {
+                // Read directory entries
+                let raw_entries = sftp.readdir(dir_path).map_err(|e| {
+                    SyncError::Io(std::io::Error::other(format!(
+                        "Failed to read remote directory {}: {}",
+                        dir_path.display(),
+                        e
+                    )))
+                })?;
+
+                for (entry_path, stat) in raw_entries {
+                    // Skip . and ..
+                    if let Some(name) = entry_path.file_name() {
+                        let name_str = name.to_string_lossy();
+                        if name_str == "." || name_str == ".." {
+                            continue;
+                        }
+                    }
+
+                    // Determine if this is a directory
+                    let is_dir = stat
+                        .perm
+                        .map(|p| (p & 0o40000) != 0) // S_IFDIR check
+                        .unwrap_or(false);
+
+                    // Determine if this is a symlink
+                    let is_symlink = stat
+                        .perm
+                        .map(|p| (p & 0o120000) == 0o120000) // S_IFLNK check
+                        .unwrap_or(false);
+
+                    let size = stat.size.unwrap_or(0);
+                    let mtime_secs = stat.mtime.unwrap_or(0);
+                    let modified = UNIX_EPOCH + Duration::from_secs(mtime_secs);
+
+                    // Get relative path from base
+                    let relative_path = entry_path
+                        .strip_prefix(base_path)
+                        .unwrap_or(&entry_path)
+                        .to_path_buf();
+
+                    entries.push(FileEntry {
+                        path: Arc::new(entry_path.clone()),
+                        relative_path: Arc::new(relative_path),
+                        size,
+                        modified,
+                        is_dir,
+                        is_symlink,
+                        symlink_target: None,
+                        is_sparse: false,
+                        allocated_size: size,
+                        xattrs: None,
+                        inode: None,
+                        nlink: 1,
+                        acls: None,
+                        bsd_flags: None,
+                    });
+
+                    // Recurse into directories (but not symlinks to avoid loops)
+                    if is_dir && !is_symlink {
+                        scan_dir_recursive(sftp, &entry_path, base_path, entries)?;
+                    }
+                }
+
+                Ok(())
+            }
+
+            let mut entries = Vec::new();
+            scan_dir_recursive(&sftp, &path_buf, &path_buf, &mut entries)?;
+
+            Ok::<Vec<FileEntry>, SyncError>(entries)
+        })
+        .await
+        .map_err(|e| SyncError::Io(std::io::Error::other(e.to_string())))??;
+
+        Ok(entries)
+    }
 }
 
 #[async_trait]
@@ -1100,6 +1215,13 @@ impl Transport for SshTransport {
         } else {
             file_count.min(self.connection_pool.max_size) // Large sync - use max
         };
+
+        tracing::info!(
+            "prepare_for_transfer: file_count={}, max_size={}, optimal={}",
+            file_count,
+            self.connection_pool.max_size,
+            optimal_connections
+        );
 
         self.connection_pool.expand_to(optimal_connections).await
     }
@@ -1177,6 +1299,111 @@ impl Transport for SshTransport {
             .collect();
 
         entries
+    }
+
+    /// Scan only direct children using SFTP readdir (no sy-remote required)
+    ///
+    /// This method uses SFTP's native directory listing, making it suitable
+    /// for pure SFTP mode where sy-remote is not available on the remote host.
+    async fn scan_flat(&self, path: &Path) -> Result<Vec<FileEntry>> {
+        let path_buf = path.to_path_buf();
+        let session_arc = self.connection_pool.get_session();
+
+        let entries = tokio::task::spawn_blocking(move || {
+            let session = session_arc.lock().map_err(|e| {
+                SyncError::Io(std::io::Error::other(format!(
+                    "Failed to lock session: {}",
+                    e
+                )))
+            })?;
+
+            let sftp = session.sftp().map_err(|e| {
+                SyncError::Io(std::io::Error::other(format!(
+                    "Failed to create SFTP session: {}",
+                    e
+                )))
+            })?;
+
+            // Open directory for reading
+            let dir = sftp.opendir(&path_buf).map_err(|e| {
+                SyncError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "Failed to open remote directory {}: {}",
+                        path_buf.display(),
+                        e
+                    ),
+                ))
+            })?;
+
+            // Read all entries
+            let raw_entries = sftp.readdir(&path_buf).map_err(|e| {
+                SyncError::Io(std::io::Error::other(format!(
+                    "Failed to read remote directory {}: {}",
+                    path_buf.display(),
+                    e
+                )))
+            })?;
+
+            drop(dir); // Close directory handle
+
+            let mut entries = Vec::new();
+
+            for (entry_path, stat) in raw_entries {
+                // Skip . and ..
+                if let Some(name) = entry_path.file_name() {
+                    let name_str = name.to_string_lossy();
+                    if name_str == "." || name_str == ".." {
+                        continue;
+                    }
+                }
+
+                // Determine if this is a directory
+                let is_dir = stat
+                    .perm
+                    .map(|p| (p & 0o40000) != 0) // S_IFDIR check
+                    .unwrap_or(false);
+
+                // Determine if this is a symlink
+                let is_symlink = stat
+                    .perm
+                    .map(|p| (p & 0o120000) == 0o120000) // S_IFLNK check
+                    .unwrap_or(false);
+
+                let size = stat.size.unwrap_or(0);
+                let mtime_secs = stat.mtime.unwrap_or(0);
+                let modified = UNIX_EPOCH + Duration::from_secs(mtime_secs);
+
+                // Get relative path (just the filename for flat scan)
+                let relative_path = entry_path
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| entry_path.clone());
+
+                entries.push(FileEntry {
+                    path: Arc::new(entry_path),
+                    relative_path: Arc::new(relative_path),
+                    size,
+                    modified,
+                    is_dir,
+                    is_symlink,
+                    symlink_target: None, // SFTP readdir doesn't provide symlink targets
+                    is_sparse: false,
+                    allocated_size: size,
+                    xattrs: None,
+                    inode: None,
+                    nlink: 1,
+                    acls: None,
+                    bsd_flags: None,
+                });
+            }
+
+            Ok::<Vec<FileEntry>, SyncError>(entries)
+        })
+        .await
+        .map_err(|e| SyncError::Io(std::io::Error::other(e.to_string())))??;
+
+        Ok(entries)
     }
 
     async fn exists(&self, path: &Path) -> Result<bool> {

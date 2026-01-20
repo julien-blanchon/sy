@@ -104,7 +104,8 @@ async fn run_server_with_path(path: &str) -> anyhow::Result<()> {
     // Check if client requested PULL mode (server sends files to client)
     use sy::server::protocol::HELLO_FLAG_PULL;
     if hello.flags & HELLO_FLAG_PULL != 0 {
-        return sy::server::run_server_pull_mode(&root_path, &mut stdin, &mut stdout).await
+        return sy::server::run_server_pull_mode(&root_path, &mut stdin, &mut stdout)
+            .await
             .map_err(|e| anyhow::anyhow!("Pull mode error: {}", e));
     }
 
@@ -439,4 +440,486 @@ For full options, use the Python API:
 "#,
         env!("CARGO_PKG_VERSION")
     );
+}
+
+/// Run sy-remote CLI with given arguments
+///
+/// This is the entry point for the `sy-remote` command, which is used by SSH transport
+/// to execute operations on remote hosts.
+#[pyfunction]
+#[pyo3(signature = (args = None))]
+pub fn remote_main(_py: Python<'_>, args: Option<Vec<String>>) -> PyResult<i32> {
+    let args = args.unwrap_or_else(|| std::env::args().collect());
+
+    // Parse arguments manually
+    let mut iter = args.iter().skip(1); // Skip program name
+    let mut show_help = false;
+    let mut show_version = false;
+
+    let command = iter.next().map(|s| s.as_str());
+
+    if command == Some("-h") || command == Some("--help") {
+        show_help = true;
+    }
+    if command == Some("-V") || command == Some("--version") {
+        show_version = true;
+    }
+
+    if show_version {
+        println!("sy-remote {}", env!("CARGO_PKG_VERSION"));
+        return Ok(0);
+    }
+
+    if show_help || command.is_none() {
+        print_remote_help();
+        return Ok(0);
+    }
+
+    let remaining_args: Vec<String> = iter.cloned().collect();
+
+    match command.unwrap() {
+        "scan" => remote_scan(&remaining_args),
+        "checksums" => remote_checksums(&remaining_args),
+        "file-checksum" => remote_file_checksum(&remaining_args),
+        "apply-delta" => remote_apply_delta(&remaining_args),
+        "receive-file" => remote_receive_file(&remaining_args),
+        "receive-sparse-file" => remote_receive_sparse_file(&remaining_args),
+        _ => {
+            eprintln!("Unknown command: {}", command.unwrap());
+            print_remote_help();
+            Ok(1)
+        }
+    }
+}
+
+fn print_remote_help() {
+    println!(
+        r#"sy-remote {} - Remote helper for sy (executes on remote hosts via SSH)
+
+USAGE:
+    sy-remote <COMMAND> [OPTIONS]
+
+COMMANDS:
+    scan <path>                     Scan directory and output file list as JSON
+    checksums <path> --block-size N Compute block checksums for delta sync
+    file-checksum <path>            Compute file checksum for verification
+    apply-delta <base> <output>     Apply delta operations (reads from stdin)
+    receive-file <output>           Receive file from stdin (may be compressed)
+    receive-sparse-file <output>    Receive sparse file with data regions
+
+OPTIONS:
+    -h, --help      Show this help message
+    -V, --version   Show version
+
+EXAMPLES:
+    sy-remote scan /path/to/dir
+    sy-remote checksums /path/to/file --block-size 4096
+    sy-remote file-checksum /path/to/file --checksum-type fast
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+fn remote_scan(args: &[String]) -> PyResult<i32> {
+    use sy::sync::scanner::Scanner;
+
+    let mut path: Option<&str> = None;
+    let mut no_git_ignore = false;
+    let mut include_git = false;
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--no-git-ignore" => no_git_ignore = true,
+            "--include-git" => include_git = true,
+            _ if !arg.starts_with('-') => path = Some(arg.as_str()),
+            _ => {}
+        }
+    }
+
+    let path = path.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("Path argument required for scan command")
+    })?;
+
+    let scanner = Scanner::new(std::path::Path::new(path))
+        .respect_gitignore(!no_git_ignore)
+        .include_git_dir(include_git);
+
+    let entries = scanner
+        .scan()
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    #[derive(serde::Serialize)]
+    struct ScanOutput {
+        entries: Vec<FileEntryJson>,
+    }
+
+    #[derive(serde::Serialize)]
+    struct FileEntryJson {
+        path: String,
+        size: u64,
+        mtime: i64,
+        is_dir: bool,
+        is_symlink: bool,
+        symlink_target: Option<String>,
+        is_sparse: bool,
+        allocated_size: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        xattrs: Option<Vec<(String, String)>>,
+        inode: Option<u64>,
+        nlink: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        acls: Option<String>,
+    }
+
+    let json_entries: Vec<FileEntryJson> = entries
+        .into_iter()
+        .map(|e| {
+            let mtime = e
+                .modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+
+            // Encode xattrs to base64 for transport
+            let xattrs = e.xattrs.map(|xattrs_map| {
+                use base64::{engine::general_purpose, Engine as _};
+                xattrs_map
+                    .into_iter()
+                    .map(|(key, value)| {
+                        let encoded = general_purpose::STANDARD.encode(&value);
+                        (key, encoded)
+                    })
+                    .collect()
+            });
+
+            // Convert ACLs from bytes to string
+            let acls = e
+                .acls
+                .and_then(|acl_bytes| String::from_utf8(acl_bytes).ok());
+
+            FileEntryJson {
+                path: e.path.to_string_lossy().to_string(),
+                size: e.size,
+                mtime,
+                is_dir: e.is_dir,
+                is_symlink: e.is_symlink,
+                symlink_target: e.symlink_target.map(|p| p.to_string_lossy().to_string()),
+                is_sparse: e.is_sparse,
+                allocated_size: e.allocated_size,
+                xattrs,
+                inode: e.inode,
+                nlink: e.nlink,
+                acls,
+            }
+        })
+        .collect();
+
+    let output = ScanOutput {
+        entries: json_entries,
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string(&output)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+    );
+
+    Ok(0)
+}
+
+fn remote_checksums(args: &[String]) -> PyResult<i32> {
+    use sy::delta::compute_checksums;
+
+    let mut path: Option<&str> = None;
+    let mut block_size: Option<usize> = None;
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--block-size" => {
+                block_size = iter.next().and_then(|s| s.parse().ok());
+            }
+            _ if !arg.starts_with('-') => path = Some(arg.as_str()),
+            _ => {}
+        }
+    }
+
+    let path = path.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("Path argument required for checksums command")
+    })?;
+    let block_size = block_size
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("--block-size argument required"))?;
+
+    let checksums = compute_checksums(std::path::Path::new(path), block_size)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    println!(
+        "{}",
+        serde_json::to_string(&checksums)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+    );
+
+    Ok(0)
+}
+
+fn remote_file_checksum(args: &[String]) -> PyResult<i32> {
+    use sy::integrity::{ChecksumType, IntegrityVerifier};
+
+    let mut path: Option<&str> = None;
+    let mut checksum_type = "fast".to_string();
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--checksum-type" => {
+                if let Some(t) = iter.next() {
+                    checksum_type = t.clone();
+                }
+            }
+            _ if !arg.starts_with('-') => path = Some(arg.as_str()),
+            _ => {}
+        }
+    }
+
+    let path = path.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("Path argument required for file-checksum command")
+    })?;
+
+    let csum_type = match checksum_type.as_str() {
+        "fast" => ChecksumType::Fast,
+        "cryptographic" => ChecksumType::Cryptographic,
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid checksum type: {}. Use 'fast' or 'cryptographic'",
+                checksum_type
+            )))
+        }
+    };
+
+    let verifier = IntegrityVerifier::new(csum_type, false);
+    let checksum = verifier
+        .compute_file_checksum(std::path::Path::new(path))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    println!("{}", checksum.to_hex());
+
+    Ok(0)
+}
+
+fn remote_apply_delta(args: &[String]) -> PyResult<i32> {
+    use std::io::Read;
+    use sy::compress::{decompress, Compression};
+    use sy::delta::{apply_delta, Delta};
+
+    if args.len() < 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "apply-delta requires <base_file> <output_file> arguments",
+        ));
+    }
+
+    let base_file = std::path::Path::new(&args[0]);
+    let output_file = std::path::Path::new(&args[1]);
+
+    // Read delta data from stdin
+    let mut stdin_data = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut stdin_data)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Check if data is compressed (Zstd magic: 0x28, 0xB5, 0x2F, 0xFD)
+    let delta_json = if stdin_data.len() >= 4
+        && stdin_data[0] == 0x28
+        && stdin_data[1] == 0xB5
+        && stdin_data[2] == 0x2F
+        && stdin_data[3] == 0xFD
+    {
+        let decompressed = decompress(&stdin_data, Compression::Zstd)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        String::from_utf8(decompressed)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+    } else {
+        String::from_utf8(stdin_data)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+    };
+
+    let delta: Delta = serde_json::from_str(&delta_json)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    let stats = apply_delta(base_file, &delta, output_file)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    println!(
+        "{{\"operations_count\": {}, \"literal_bytes\": {}}}",
+        stats.operations_count, stats.literal_bytes
+    );
+
+    Ok(0)
+}
+
+fn remote_receive_file(args: &[String]) -> PyResult<i32> {
+    use std::io::{Read, Write};
+    use sy::compress::{decompress, Compression};
+
+    let mut output_path: Option<&str> = None;
+    let mut mtime: Option<u64> = None;
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--mtime" => {
+                mtime = iter.next().and_then(|s| s.parse().ok());
+            }
+            _ if !arg.starts_with('-') => output_path = Some(arg.as_str()),
+            _ => {}
+        }
+    }
+
+    let output_path = output_path.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err("Output path required for receive-file command")
+    })?;
+    let output_path = std::path::Path::new(output_path);
+
+    // Read file data from stdin
+    let mut stdin_data = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut stdin_data)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Check if data is compressed (Zstd magic)
+    let file_data = if stdin_data.len() >= 4
+        && stdin_data[0] == 0x28
+        && stdin_data[1] == 0xB5
+        && stdin_data[2] == 0x2F
+        && stdin_data[3] == 0xFD
+    {
+        decompress(&stdin_data, Compression::Zstd)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?
+    } else {
+        stdin_data
+    };
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    }
+
+    // Write file
+    let mut output_file = std::fs::File::create(output_path)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    output_file
+        .write_all(&file_data)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    output_file
+        .flush()
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Set mtime if provided
+    if let Some(mtime_secs) = mtime {
+        use std::time::{Duration, UNIX_EPOCH};
+        let mtime = UNIX_EPOCH + Duration::from_secs(mtime_secs);
+        let _ = filetime::set_file_mtime(output_path, filetime::FileTime::from_system_time(mtime));
+    }
+
+    println!("{{\"bytes_written\": {}}}", file_data.len());
+
+    Ok(0)
+}
+
+fn remote_receive_sparse_file(args: &[String]) -> PyResult<i32> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use sy::sparse::DataRegion;
+
+    let mut output_path: Option<&str> = None;
+    let mut total_size: Option<u64> = None;
+    let mut regions_json: Option<String> = None;
+    let mut mtime: Option<u64> = None;
+
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--total-size" => {
+                total_size = iter.next().and_then(|s| s.parse().ok());
+            }
+            "--regions" => {
+                regions_json = iter.next().cloned();
+            }
+            "--mtime" => {
+                mtime = iter.next().and_then(|s| s.parse().ok());
+            }
+            _ if !arg.starts_with('-') => output_path = Some(arg.as_str()),
+            _ => {}
+        }
+    }
+
+    let output_path = output_path.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "Output path required for receive-sparse-file command",
+        )
+    })?;
+    let total_size = total_size
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("--total-size argument required"))?;
+    let regions_json = regions_json
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("--regions argument required"))?;
+
+    let output_path = std::path::Path::new(output_path);
+    let data_regions: Vec<DataRegion> = serde_json::from_str(&regions_json)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    }
+
+    // Create file and set its size (creates sparse file with holes)
+    let mut output_file = std::fs::File::create(output_path)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    output_file
+        .set_len(total_size)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Read and write each data region from stdin
+    let mut stdin = std::io::stdin();
+    let mut total_bytes_written = 0u64;
+
+    for region in &data_regions {
+        output_file
+            .seek(SeekFrom::Start(region.offset))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        let mut buffer = vec![0u8; region.length as usize];
+        stdin
+            .read_exact(&mut buffer)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+        output_file
+            .write_all(&buffer)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        total_bytes_written += region.length;
+    }
+
+    output_file
+        .flush()
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+    output_file
+        .sync_all()
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+
+    // Set mtime if provided
+    if let Some(mtime_secs) = mtime {
+        use std::time::{Duration, UNIX_EPOCH};
+        let mtime = UNIX_EPOCH + Duration::from_secs(mtime_secs);
+        let _ = filetime::set_file_mtime(output_path, filetime::FileTime::from_system_time(mtime));
+    }
+
+    println!(
+        "{{\"bytes_written\": {}, \"file_size\": {}, \"regions\": {}}}",
+        total_bytes_written,
+        total_size,
+        data_regions.len()
+    );
+
+    Ok(0)
 }

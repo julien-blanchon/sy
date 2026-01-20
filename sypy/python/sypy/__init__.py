@@ -65,15 +65,27 @@ from sypy._sypy import (
     ChangeAction,
     # Client options
     CloudClientOptions,
+    # Daemon classes
+    DaemonConfig,
+    DaemonContext,
+    DaemonInfo,
     DirectoryChange,
     DryRunDetails,
+    # Ops classes (get, put, rm)
+    FailedTransfer,
     FileChange,
     # Config classes
     GcsConfig,
+    GetOptions,
+    GetResult,
     # List classes
     ListEntry,
     # Progress classes
     ProgressSnapshot,
+    PutOptions,
+    PutResult,
+    RemoveOptions,
+    RemoveResult,
     S3Config,
     SshConfig,
     SymlinkChange,
@@ -84,36 +96,80 @@ from sypy._sypy import (
     SyncStats,
     # Version
     __version__,
+    # Daemon functions
+    daemon_check,
+    daemon_start,
+    daemon_stop,
+    # Ops functions
+    get,
+    get_with_options,
     # Functions
     ls,
     # CLI functions
     main,
     parse_path,
+    # Ops functions (continued)
+    put,
+    put_with_options,
+    # Ops functions (rm)
+    rm,
+    rm_with_options,
     run_daemon,
     run_server,
     sync,
     sync_with_options,
 )
 from sypy.ls_types import ListEntryDict
+from sypy.ops_types import (
+    FailedTransferDict,
+    GetResultDict,
+    PutResultDict,
+    RemoveResultDict,
+)
 
 __all__ = [
     # Dry-run classes
     "ChangeAction",
     # Client options
     "CloudClientOptions",
+    # Daemon classes
+    "DaemonConfig",
+    "DaemonContext",
+    "DaemonInfo",
     "DirectoryChange",
     # TypedDicts
     "DryRunChange",
     "DryRunDetails",
     "DryRunSummary",
+    # Ops classes (get, put, rm)
+    "FailedTransfer",
+    "FailedTransferDict",
     "FileChange",
     # Config classes
     "GcsConfig",
+    # Ops functions and classes
+    "get",
+    "get_with_options",
+    "GetOptions",
+    "GetResult",
+    "GetResultDict",
     # List classes
     "ListEntry",
     "ListEntryDict",
     # Progress classes
     "ProgressSnapshot",
+    # Ops functions (continued)
+    "put",
+    "put_with_options",
+    "PutOptions",
+    "PutResult",
+    "PutResultDict",
+    # Ops functions (rm)
+    "rm",
+    "rm_with_options",
+    "RemoveOptions",
+    "RemoveResult",
+    "RemoveResultDict",
     "S3Config",
     "SshConfig",
     "SymlinkChange",
@@ -124,6 +180,10 @@ __all__ = [
     "SyncStats",
     # Version
     "__version__",
+    # Daemon functions
+    "daemon_check",
+    "daemon_start",
+    "daemon_stop",
     # Functions
     "ls",
     # CLI functions

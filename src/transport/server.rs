@@ -44,6 +44,10 @@ impl ServerSession {
             cmd.arg("-i").arg(key);
         }
 
+        // Non-interactive mode options
+        cmd.arg("-o").arg("StrictHostKeyChecking=no");
+        cmd.arg("-o").arg("UserKnownHostsFile=/dev/null");
+
         // Remote command: sy --server <remote_path>
         cmd.arg("sy");
         cmd.arg("--server");
@@ -376,6 +380,10 @@ impl ServerSession {
         for key in &config.identity_file {
             cmd.arg("-i").arg(key);
         }
+
+        // Non-interactive mode options
+        cmd.arg("-o").arg("StrictHostKeyChecking=no");
+        cmd.arg("-o").arg("UserKnownHostsFile=/dev/null");
 
         cmd.arg("sy");
         cmd.arg("--server");
